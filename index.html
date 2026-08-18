@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
 <meta name="theme-color" content="#0a0e1a">
-<meta name="description" content="Bruit blanc de sèche-cheveux pour aider bébé à s'endormir. Durée et fondu de fin paramétrables.">
+<meta name="description" content="Bruit blanc de sèche-cheveux pour aider bébé à s'endormir. Durée réglable, baisse progressive du volume.">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
@@ -168,6 +168,9 @@
   let endTime=0;
   let tickInterval=null;
   let wakeLock=null;
+  let swReg=null;
+  let lastNotifUpdate=0;
+  let mediaSessionReady=false;
 
   function fmt(ms){
     const total=Math.max(0,Math.ceil(ms/1000));
@@ -257,12 +260,13 @@
     envelope.gain.setValueCurveAtTime(curve,start,remaining);
   }
 
-  function startAudio(){
+  async function startAudio(){
     if(!ctx){
       const AC=window.AudioContext||window.webkitAudioContext;
       if(!AC){ statusEl.textContent='Audio non supporté'; return; }
       ctx=new AC();
     }
+    setupMediaSession();
     if(ctx.state==='suspended'){ ctx.resume(); }
     buildGraph();
     if(masterVolume){ masterVolume.gain.value=volume; }
@@ -271,6 +275,9 @@
     isPlaying=true;
     startTicker();
     requestWakeLock();
+    setPlaybackState('playing');
+    await requestNotifPermission();
+    showNotification(true);
     updateUI();
   }
 
@@ -279,6 +286,8 @@
     clearInterval(tickInterval);
     tickInterval=null;
     releaseWakeLock();
+    setPlaybackState('none');
+    closeNotification();
     if(ctx && noiseSource){
       const now=ctx.currentTime;
       try{
@@ -310,7 +319,12 @@
 
   function tick(){
     if(!isPlaying) return;
-    if(infiniteMode){ timeDisplay.textContent='∞'; return; }
+    if(infiniteMode){
+      timeDisplay.textContent='∞';
+      updatePosition();
+      showNotification();
+      return;
+    }
     const remaining=endTime-Date.now();
     if(remaining<=0){
       timeDisplay.textContent='00:00';
@@ -318,11 +332,15 @@
       return;
     }
     timeDisplay.textContent=fmt(remaining);
+    updatePosition();
+    showNotification();
   }
 
   function reschedule(){
-    endTime=Date.now()+durationMs;
-    if(ctx){ scheduleEnvelope(); }
+    if(isPlaying){
+      endTime=Date.now()+durationMs;
+      if(ctx){ scheduleEnvelope(); }
+    }
   }
 
   function updateDurationLabel(){
@@ -374,9 +392,94 @@
     }
   }
 
+  function setupMediaSession(){
+    if(!('mediaSession' in navigator) || mediaSessionReady) return;
+    mediaSessionReady=true;
+    try{
+      navigator.mediaSession.metadata=new MediaMetadata({
+        title:'Bruit blanc',
+        artist:'margododo',
+        artwork:[{src:'icon-512.png',sizes:'512x512',type:'image/png'}]
+      });
+      navigator.mediaSession.setActionHandler('play',function(){ startAudio(); });
+      navigator.mediaSession.setActionHandler('pause',function(){ stopAudio(); });
+      navigator.mediaSession.setActionHandler('stop',function(){ stopAudio(); });
+    }catch(e){}
+  }
+
+  function setPlaybackState(state){
+    if(!('mediaSession' in navigator)) return;
+    try{ navigator.mediaSession.playbackState=state; }catch(e){}
+  }
+
+  function updatePosition(){
+    if(!('mediaSession' in navigator) || !isPlaying || infiniteMode) return;
+    try{
+      const remaining=Math.max(0,endTime-Date.now());
+      navigator.mediaSession.setPositionState({
+        duration:durationMs/1000,
+        position:Math.max(0,(durationMs-remaining)/1000),
+        playbackRate:1
+      });
+    }catch(e){}
+  }
+
+  function registerSW(){
+    if(!('serviceWorker' in navigator)) return;
+    navigator.serviceWorker.register('./sw.js').then(function(reg){
+      swReg=reg;
+    }).catch(function(){ swReg=null; });
+  }
+
+  async function requestNotifPermission(){
+    if(!('Notification' in window)) return;
+    if(Notification.permission==='default'){
+      try{ await Notification.requestPermission(); }catch(e){}
+    }
+  }
+
+  function notifPayload(){
+    if(infiniteMode){
+      return { title:'margododo · en lecture', body:'Lecture continue', label:'Arrêter' };
+    }
+    const rem=Math.max(0,endTime-Date.now());
+    return { title:'margododo · en lecture', body:'Reste '+fmt(rem), label:'Arrêter' };
+  }
+
+  async function showNotification(force){
+    if(!swReg || !('Notification' in window) || Notification.permission!=='granted') return;
+    const now=Date.now();
+    if(!force && now-lastNotifUpdate<5000) return;
+    lastNotifUpdate=now;
+    const p=notifPayload();
+    try{
+      await swReg.showNotification(p.title,{
+        tag:'margododo',
+        body:p.body,
+        icon:'icon.svg',
+        badge:'icon.svg',
+        actions:[{action:'stop',title:p.label}]
+      });
+    }catch(e){}
+  }
+
+  async function closeNotification(){
+    if(!swReg) return;
+    try{
+      const list=await swReg.getNotifications({tag:'margododo'});
+      list.forEach(function(n){ n.close(); });
+    }catch(e){}
+  }
+
   playBtn.addEventListener('click',function(){
     if(isPlaying){ stopAudio(); }else{ startAudio(); }
   });
+
+  if('serviceWorker' in navigator){
+    navigator.serviceWorker.addEventListener('message',function(e){
+      if(e.data && e.data.type==='stop'){ stopAudio(); }
+    });
+  }
 
   presetGroup.addEventListener('click',function(e){
     const btn=e.target.closest('.pill');
@@ -407,11 +510,12 @@
   });
 
   document.addEventListener('visibilitychange',function(){
-    if(document.visibilityState==='visible' && isPlaying){
-      requestWakeLock();
+    if(document.visibilityState==='visible'){
+      if(isPlaying){ requestWakeLock(); showNotification(true); }
     }
   });
 
+  registerSW();
   updatePresetActive();
   updateDurationLabel();
 })();
