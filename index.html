@@ -65,6 +65,31 @@
     touch-action:manipulation;
   }
   .play-btn:active{ transform:scale(.94); }
+  .ring-wrap{ position:relative; width:148px; height:148px; }
+  .ring-wrap .play-btn{
+    position:absolute; top:50%; left:50%;
+    transform:translate(-50%,-50%);
+  }
+  .ring-wrap .play-btn:active{ transform:translate(-50%,-50%) scale(.94); }
+  .ring{ width:100%; height:100%; }
+  .ring-bg{ fill:none; stroke:rgba(255,255,255,.08); stroke-width:3; }
+  .ring-fg{
+    fill:none; stroke:var(--accent); stroke-width:3; stroke-linecap:round;
+    stroke-dasharray:289.03; stroke-dashoffset:0; transition:stroke-dashoffset .3s linear;
+  }
+  #updateBanner{
+    position:fixed; top:0; left:0; right:0; z-index:50;
+    display:flex; align-items:center; justify-content:space-between; gap:12px;
+    padding:calc(10px + env(safe-area-inset-top)) 16px 10px;
+    background:var(--panel); border-bottom:1px solid rgba(255,255,255,.1);
+    font-size:.85rem;
+  }
+  #updateBanner[hidden]{ display:none; }
+  #updateBtn{
+    flex-shrink:0; border:none; border-radius:999px; cursor:pointer;
+    background:var(--accent); color:#241303; font-weight:700; font-size:.85rem;
+    padding:10px 16px; min-height:44px; touch-action:manipulation;
+  }
   .controls{
     width:100%;
     background:var(--panel);
@@ -99,10 +124,15 @@
   .slider-meta{ display:flex; justify-content:space-between; align-items:center; gap:14px; font-size:.85rem; color:var(--muted); }
   .slider-meta input{ flex:1; min-width:0; }
   .slider-meta .value{ color:var(--text); font-weight:600; font-variant-numeric:tabular-nums; flex-shrink:0; }
+  .curve{ width:100%; height:36px; display:block; }
   .foot{ text-align:center; color:var(--muted); font-size:.7rem; margin-top:auto; opacity:.7; }
 </style>
 </head>
 <body>
+  <div id="updateBanner" hidden role="status">
+    <span>Nouvelle version disponible</span>
+    <button id="updateBtn">Recharger</button>
+  </div>
 <main>
   <header>
     <h1>margo<span>dodo</span></h1>
@@ -112,9 +142,15 @@
   <div id="timeDisplay">30:00</div>
   <div id="status">Prêt</div>
 
-  <button id="playBtn" class="play-btn" aria-label="Lancer la lecture">
-    <span id="playIcon">▶</span>
-  </button>
+  <div class="ring-wrap">
+    <svg class="ring" viewBox="0 0 100 100" aria-hidden="true">
+      <circle class="ring-bg" cx="50" cy="50" r="46"></circle>
+      <path class="ring-fg" id="ringFg" d="M 50 4 A 46 46 0 0 0 50 96 A 46 46 0 0 0 50 4"></path>
+    </svg>
+    <button id="playBtn" class="play-btn" aria-label="Lancer la lecture">
+      <span id="playIcon">▶</span>
+    </button>
+  </div>
 
   <section class="controls">
     <div class="ctl-row">
@@ -133,6 +169,13 @@
     </div>
 
     <div class="ctl-row">
+      <span class="ctl-label">Évolution du volume</span>
+      <svg id="curveSvg" class="curve" viewBox="0 0 200 48" preserveAspectRatio="none" aria-hidden="true">
+        <path id="curvePath" fill="none" stroke="#ffb454" stroke-width="2" stroke-linecap="round"></path>
+      </svg>
+    </div>
+
+    <div class="ctl-row">
       <span class="ctl-label">Volume</span>
       <input type="range" id="volumeSlider" min="0" max="100" value="60" aria-label="Volume">
     </div>
@@ -148,6 +191,10 @@
   const statusEl=document.getElementById('status');
   const playBtn=document.getElementById('playBtn');
   const playIcon=document.getElementById('playIcon');
+  const ringFg=document.getElementById('ringFg');
+  const curvePath=document.getElementById('curvePath');
+  const updateBanner=document.getElementById('updateBanner');
+  const updateBtn=document.getElementById('updateBtn');
   const presetGroup=document.getElementById('presetGroup');
   const durationSlider=document.getElementById('durationSlider');
   const durationValue=document.getElementById('durationValue');
@@ -171,6 +218,11 @@
   let swReg=null;
   let lastNotifUpdate=0;
   let mediaSessionReady=false;
+  let pendingWorker=null;
+  let reloadPending=false;
+  let lastBadgeMins=-1;
+
+  const RING_C=2*Math.PI*46;
 
   function fmt(ms){
     const total=Math.max(0,Math.ceil(ms/1000));
@@ -286,6 +338,7 @@
     clearInterval(tickInterval);
     tickInterval=null;
     releaseWakeLock();
+    updateBadge();
     setPlaybackState('none');
     closeNotification();
     if(ctx && noiseSource){
@@ -321,6 +374,8 @@
     if(!isPlaying) return;
     if(infiniteMode){
       timeDisplay.textContent='∞';
+      updateRing();
+      updateBadge();
       updatePosition();
       showNotification();
       return;
@@ -332,6 +387,8 @@
       return;
     }
     timeDisplay.textContent=fmt(remaining);
+    updateRing();
+    updateBadge();
     updatePosition();
     showNotification();
   }
@@ -364,7 +421,79 @@
     });
   }
 
+  function saveSettings(){
+    try{
+      localStorage.setItem('margododo.durationMin',String(Math.round(durationMs/60000)));
+      localStorage.setItem('margododo.infinite',infiniteMode?'1':'0');
+      localStorage.setItem('margododo.volume',String(Math.round(volume*100)));
+    }catch(e){}
+  }
+
+  function loadSettings(){
+    try{
+      const d=parseInt(localStorage.getItem('margododo.durationMin'),10);
+      if(!isNaN(d) && d>=1 && d<=120){
+        durationMs=d*60*1000;
+        durationSlider.value=d;
+      }
+      const inf=localStorage.getItem('margododo.infinite');
+      if(inf==='1'){ infiniteMode=true; }
+      const v=parseInt(localStorage.getItem('margododo.volume'),10);
+      if(!isNaN(v)){
+        volume=Math.max(0,Math.min(100,v))/100;
+        volumeSlider.value=v;
+      }
+    }catch(e){}
+  }
+
+  function updateRing(){
+    let frac=1;
+    if(isPlaying && !infiniteMode){
+      frac=Math.max(0,Math.min(1,(endTime-Date.now())/durationMs));
+    }
+    ringFg.style.strokeDashoffset=String(RING_C*(1-frac));
+  }
+
+  function updateBadge(){
+    if(!('setAppBadge' in navigator)) return;
+    try{
+      if(!isPlaying || infiniteMode){
+        if(lastBadgeMins!==0){ navigator.clearAppBadge(); lastBadgeMins=0; }
+        return;
+      }
+      const mins=Math.max(1,Math.ceil(Math.max(0,endTime-Date.now())/60000));
+      if(mins!==lastBadgeMins){
+        navigator.setAppBadge(mins);
+        lastBadgeMins=mins;
+      }
+    }catch(e){}
+  }
+
+  function drawCurve(){
+    const W=200,H=48,PAD=3;
+    const pts=[];
+    if(infiniteMode){
+      pts.push([PAD,H-PAD]);
+      pts.push([W-PAD,H-PAD]);
+    }else{
+      const dur=durationMs/1000;
+      const fadeIn=Math.min(1.2,dur/3);
+      const tail=dur-fadeIn;
+      const n=120;
+      for(let i=0;i<n;i++){
+        const t=(i/(n-1))*dur;
+        let y;
+        if(t<fadeIn){ y=volume*(t/fadeIn); }
+        else{ const u=(t-fadeIn)/tail; y=volume*(1-u*u); }
+        pts.push([PAD+(W-2*PAD)*(t/dur), H-PAD-(H-2*PAD)*y]);
+      }
+    }
+    const d=pts.map(function(p,i){ return (i===0?'M':'L')+p[0].toFixed(1)+' '+p[1].toFixed(1); }).join(' ');
+    curvePath.setAttribute('d',d);
+  }
+
   function updateUI(){
+    updateRing();
     if(isPlaying){
       playBtn.setAttribute('aria-label','Arrêter la lecture');
       playIcon.textContent='■';
@@ -428,6 +557,16 @@
     if(!('serviceWorker' in navigator)) return;
     navigator.serviceWorker.register('./sw.js').then(function(reg){
       swReg=reg;
+      reg.addEventListener('updatefound',function(){
+        const w=reg.installing;
+        if(!w) return;
+        w.addEventListener('statechange',function(){
+          if(w.state==='installed' && navigator.serviceWorker.controller){
+            pendingWorker=w;
+            updateBanner.hidden=false;
+          }
+        });
+      });
     }).catch(function(){ swReg=null; });
   }
 
@@ -475,9 +614,22 @@
     if(isPlaying){ stopAudio(); }else{ startAudio(); }
   });
 
+  updateBtn.addEventListener('click',function(){
+    updateBanner.hidden=true;
+    if(pendingWorker){
+      reloadPending=true;
+      pendingWorker.postMessage({type:'SKIP_WAITING'});
+    }else{
+      window.location.reload();
+    }
+  });
+
   if('serviceWorker' in navigator){
     navigator.serviceWorker.addEventListener('message',function(e){
       if(e.data && e.data.type==='stop'){ stopAudio(); }
+    });
+    navigator.serviceWorker.addEventListener('controllerchange',function(){
+      if(reloadPending){ window.location.reload(); }
     });
   }
 
@@ -493,6 +645,8 @@
     }
     updatePresetActive();
     updateDurationLabel();
+    saveSettings();
+    drawCurve();
     if(isPlaying){ reschedule(); }
   });
 
@@ -501,23 +655,31 @@
     durationMs=parseInt(durationSlider.value,10)*60*1000;
     updatePresetActive();
     updateDurationLabel();
+    saveSettings();
+    drawCurve();
     if(isPlaying){ reschedule(); }
   });
 
   volumeSlider.addEventListener('input',function(){
     volume=volumeSlider.value/100;
     if(masterVolume && ctx){ masterVolume.gain.setValueAtTime(volume,ctx.currentTime); }
+    saveSettings();
+    drawCurve();
   });
 
   document.addEventListener('visibilitychange',function(){
     if(document.visibilityState==='visible'){
       if(isPlaying){ requestWakeLock(); showNotification(true); }
+      if(swReg){ swReg.update().catch(function(){}); }
     }
   });
 
   registerSW();
+  loadSettings();
   updatePresetActive();
   updateDurationLabel();
+  drawCurve();
+  updateRing();
 })();
 </script>
 </body>

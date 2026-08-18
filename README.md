@@ -9,6 +9,11 @@ Application web autonome qui diffuse un bruit blanc de type sèche-cheveux pour 
 - **Baisse progressive du volume** sur toute la durée (courbe quadratique `V·(1−t²)`) : le volume reste proche du réglage pendant la phase d'endormissement, puis décroît en douceur jusqu'au silence à la fin.
 - **Contrôle média natif Android** (Media Session) : boutons lecture/arrêt et durée restante depuis le panneau de notifications et l'écran de verrouillage ; un tap rouvre l'app.
 - **Notification persistante** : temps restant mis à jour en direct + bouton "Arrêter" ; un tap rouvre l'app.
+- **Anneau de progression** autour du bouton lecture : le cercle se vide au fil du temps restant.
+- **Badge d'icône** (Badging API) : le lanceur Android affiche les minutes restantes pendant la lecture.
+- **Réglages mémorisés** : durée, volume et mode ∞ conservés entre deux sessions (`localStorage`).
+- **Aperçu de la courbe** : visualisation de la décroissance du volume pour la durée choisie.
+- **Mise à jour automatique** : bandeau "Nouvelle version disponible" quand une nouvelle version est déployée (stratégie *network-first* sur les navigations).
 - **Écran maintenu allumé** pendant la lecture (Wake Lock API).
 - **PWA installable** : ajout à l'écran d'accueil, fonctionnement hors ligne.
 - UI responsive pensée pour le tactile (thème sombre, grandes zones de tap).
@@ -29,8 +34,8 @@ Application web autonome qui diffuse un bruit blanc de type sèche-cheveux pour 
 
 | Fichier | Rôle |
 |---|---|
-| `index.html` | Application complète : UI, génération du son, timer, Media Session, notifications |
-| `sw.js` | Service worker : clics de notification, cache hors ligne |
+| `index.html` | Application complète : UI, génération du son, timer, Media Session, notifications, réglages |
+| `sw.js` | Service worker : clics de notification, cache hors ligne (*network-first* navigations) |
 | `manifest.webmanifest` | Manifeste PWA |
 | `icon.svg`, `icon-192.png`, `icon-512.png` | Icônes |
 | `tools/make-icons.py` | Régénération des icônes PNG (Python stdlib) |
@@ -48,10 +53,11 @@ python3 -m http.server 8000
 
 - Si l'app est **balaуée** des apps récentes, le navigateur stoppe l'audio (limite du web) et la notification reste affichée avec un temps figé ; son tap rouvre l'app.
 - Le volume réglé dans l'app est le **volume de départ** de la courbe ; le volume physique du téléphone reste le volume maître global.
-- Les notifications web requièrent Android récent / iOS 16.4+ sur une PWA installée.
+- Les notifications web et le badge d'icône requièrent une PWA installée (Android récent / iOS 16.4+).
 
 ## Fonctionnement technique
 
 - Le son est un buffer de bruit blanc en boucle, filtré (highpass ~80 Hz, lowpass ~3,2 kHz, renforcement ~1,1 kHz) avec un bourdonnement à 100/200 Hz très discret.
 - L'enveloppe de volume est programmée sur l'horloge audio (`setValueCurveAtTime`) : fondu d'entrée ~1,2 s puis décroissance quadratique jusqu'à 0 exactement à la fin — aucun clic, fiable même si l'onglet est mis en veille.
 - Le compte à rebours est ancré sur `Date.now()`, ce qui le rend tolérant au throttling des onglets en arrière-plan.
+- Le service worker sert les navigations en *network-first* (avec repli cache hors ligne) et les assets en cache-first ; une nouvelle version déployée est détectée automatiquement et proposée via un bandeau de rechargement.

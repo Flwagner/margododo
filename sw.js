@@ -1,6 +1,6 @@
 "use strict";
 
-const CACHE='margododo-v2';
+const CACHE='margododo-v3';
 const ASSETS=[
   './',
   './index.html',
@@ -14,7 +14,6 @@ self.addEventListener('install',function(e){
   e.waitUntil(
     caches.open(CACHE)
       .then(function(cache){ return cache.addAll(ASSETS); })
-      .then(function(){ return self.skipWaiting(); })
   );
 });
 
@@ -28,8 +27,28 @@ self.addEventListener('activate',function(e){
   );
 });
 
+self.addEventListener('message',function(e){
+  if(e.data && e.data.type==='SKIP_WAITING'){ self.skipWaiting(); }
+});
+
 self.addEventListener('fetch',function(e){
   if(e.request.method!=='GET') return;
+  if(e.request.mode==='navigate'){
+    e.respondWith(
+      fetch(e.request).then(function(res){
+        if(res.ok){
+          const copy=res.clone();
+          caches.open(CACHE).then(function(c){ c.put(e.request,copy); });
+        }
+        return res;
+      }).catch(function(){
+        return caches.match(e.request).then(function(hit){
+          return hit || caches.match('./index.html');
+        });
+      })
+    );
+    return;
+  }
   e.respondWith(
     caches.match(e.request).then(function(hit){
       if(hit) return hit;
