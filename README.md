@@ -30,6 +30,17 @@ Application web autonome qui diffuse un bruit blanc de type sèche-cheveux pour 
 2. Ouvrir l'app installée, appuyer sur **Lecture** → autoriser les notifications.
 3. Le son se lance, la notification s'affiche (temps restant, bouton Arrêter) et le contrôle média apparaît au verrouillage.
 
+### Utilisation avec une enceinte Bluetooth
+
+Le montage (téléphone → enceinte BT dans la chambre) fonctionne sans configuration particulière. Points de vigilance :
+
+- **Volume** : sur Android, le volume média du téléphone pilote aussi le volume de l'enceinte BT (*absolute volume*). Régler le volume une fois, puis n'utiliser que le curseur de l'app pour éviter de modifier le niveau dans la chambre par accident.
+- **Appels et notifications** : un appel entrant ou une notification peut interrompre le son. L'app ne gère pas encore l'événement d'interruption audio (`interrupted`), le son peut donc s'arrêter sans reprise automatique.
+- **Sonneries et notifications passent par l'enceinte** : activer le mode **Ne pas déranger** sur le téléphone pendant la lecture.
+- **Déconnexion Bluetooth** : si le lien saute (batterie, portée), le son peut basculer sur le haut-parleur du téléphone ou se couper — pas de danger pour bébé (le téléphone n'est pas dans la chambre), mais à surveiller.
+- **Batterie** : le wake lock maintient l'écran allumé et le Bluetooth consomme ; brancher le téléphone la nuit si possible. Éteindre l'écran manuellement coupe le wake lock mais l'audio continue en arrière-plan sur Android (la mise à jour de la notification peut alors ralentir).
+- **Sécurité auditive** : garder un volume doux et placer l'enceinte assez loin du berceau ; éviter les niveaux élevés prolongés.
+
 ## Structure
 
 | Fichier | Rôle |
