@@ -228,7 +228,7 @@
   let tickInterval=null;
   let wakeLock=null;
   let swReg=null;
-  let lastNotifUpdate=0;
+  let lastNotifBody=null;
   let mediaSessionReady=false;
   let pendingWorker=null;
   let reloadPending=false;
@@ -355,6 +355,7 @@
     updateBadge();
     setPlaybackState('none');
     closeNotification();
+    lastNotifBody=null;
     if(ctx && noiseSource){
       const now=ctx.currentTime;
       try{
@@ -627,10 +628,9 @@
 
   async function showNotification(force){
     if(!swReg || !('Notification' in window) || Notification.permission!=='granted') return;
-    const now=Date.now();
-    if(!force && now-lastNotifUpdate<5000) return;
-    lastNotifUpdate=now;
     const p=notifPayload();
+    if(!force && p.body===lastNotifBody) return;
+    lastNotifBody=p.body;
     try{
       await swReg.showNotification(p.title,{
         tag:'margododo',
