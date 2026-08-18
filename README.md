@@ -1,1 +1,57 @@
 # margododo
+
+Application web autonome qui diffuse un bruit blanc de type sèche-cheveux pour aider bébé à s'endormir. Conçue pour être utilisée sur un smartphone, hébergée sur GitHub Pages (aucun backend).
+
+## Fonctionnalités
+
+- **Bruit blanc généré procéduralement** via la Web Audio API (passe-bas + léger bourdonnement moteur) — aucun fichier audio à fournir.
+- **Durée paramétrable** : présélections (5, 10, 30, 60 min), mode continu ∞, ou curseur de 1 à 120 min.
+- **Baisse progressive du volume** sur toute la durée (courbe quadratique `V·(1−t²)`) : le volume reste proche du réglage pendant la phase d'endormissement, puis décroît en douceur jusqu'au silence à la fin.
+- **Contrôle média natif Android** (Media Session) : boutons lecture/arrêt et durée restante depuis le panneau de notifications et l'écran de verrouillage ; un tap rouvre l'app.
+- **Notification persistante** : temps restant mis à jour en direct + bouton "Arrêter" ; un tap rouvre l'app.
+- **Écran maintenu allumé** pendant la lecture (Wake Lock API).
+- **PWA installable** : ajout à l'écran d'accueil, fonctionnement hors ligne.
+- UI responsive pensée pour le tactile (thème sombre, grandes zones de tap).
+
+## Installation / mise en ligne
+
+1. Pousser le contenu du repo sur `main` (aucune étape de build).
+2. Activer GitHub Pages : **Settings → Pages → Deploy from a branch → `main` → `/ (root)`**.
+3. L'app est alors disponible à l'URL `https://<utilisateur>.github.io/<repo>/`.
+
+### Utilisation sur téléphone
+
+1. Ouvrir l'URL dans Chrome sur Android, puis **Ajouter à l'écran d'accueil** (obligatoire pour les notifications et l'installation PWA).
+2. Ouvrir l'app installée, appuyer sur **Lecture** → autoriser les notifications.
+3. Le son se lance, la notification s'affiche (temps restant, bouton Arrêter) et le contrôle média apparaît au verrouillage.
+
+## Structure
+
+| Fichier | Rôle |
+|---|---|
+| `index.html` | Application complète : UI, génération du son, timer, Media Session, notifications |
+| `sw.js` | Service worker : clics de notification, cache hors ligne |
+| `manifest.webmanifest` | Manifeste PWA |
+| `icon.svg`, `icon-192.png`, `icon-512.png` | Icônes |
+| `tools/make-icons.py` | Régénération des icônes PNG (Python stdlib) |
+
+## Test local
+
+```sh
+python3 -m http.server 8000
+# puis ouvrir http://localhost:8000
+```
+
+`localhost` est un contexte sécurisé : service worker et notifications fonctionnent en local.
+
+## Limites connues
+
+- Si l'app est **balaуée** des apps récentes, le navigateur stoppe l'audio (limite du web) et la notification reste affichée avec un temps figé ; son tap rouvre l'app.
+- Le volume réglé dans l'app est le **volume de départ** de la courbe ; le volume physique du téléphone reste le volume maître global.
+- Les notifications web requièrent Android récent / iOS 16.4+ sur une PWA installée.
+
+## Fonctionnement technique
+
+- Le son est un buffer de bruit blanc en boucle, filtré (highpass ~80 Hz, lowpass ~3,2 kHz, renforcement ~1,1 kHz) avec un bourdonnement à 100/200 Hz très discret.
+- L'enveloppe de volume est programmée sur l'horloge audio (`setValueCurveAtTime`) : fondu d'entrée ~1,2 s puis décroissance quadratique jusqu'à 0 exactement à la fin — aucun clic, fiable même si l'onglet est mis en veille.
+- Le compte à rebours est ancré sur `Date.now()`, ce qui le rend tolérant au throttling des onglets en arrière-plan.
