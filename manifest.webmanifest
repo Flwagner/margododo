@@ -1,0 +1,13 @@
+{
+  "name": "margododo — bruit blanc pour bébé",
+  "short_name": "margododo",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#0a0e1a",
+  "theme_color": "#0a0e1a",
+  "description": "Bruit blanc de sèche-cheveux pour aider bébé à s'endormir.",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any" }
+  ]
+}
