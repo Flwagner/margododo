@@ -125,6 +125,14 @@
   .slider-meta input{ flex:1; min-width:0; }
   .slider-meta .value{ color:var(--text); font-weight:600; font-variant-numeric:tabular-nums; flex-shrink:0; }
   .curve{ width:100%; height:36px; display:block; }
+  .curve-wrap{ position:relative; }
+  .curve-marker{
+    position:absolute; width:8px; height:8px; border-radius:50%;
+    background:var(--accent); border:2px solid var(--bg);
+    transform:translate(-50%,-50%); pointer-events:none;
+    box-shadow:0 0 6px rgba(255,180,84,.6);
+    transition:left .25s linear, top .25s linear;
+  }
   .foot{ text-align:center; color:var(--muted); font-size:.7rem; margin-top:auto; opacity:.7; }
 </style>
 </head>
@@ -170,9 +178,12 @@
 
     <div class="ctl-row">
       <span class="ctl-label">Évolution du volume</span>
-      <svg id="curveSvg" class="curve" viewBox="0 0 200 48" preserveAspectRatio="none" aria-hidden="true">
-        <path id="curvePath" fill="none" stroke="#ffb454" stroke-width="2" stroke-linecap="round"></path>
-      </svg>
+      <div class="curve-wrap">
+        <svg id="curveSvg" class="curve" viewBox="0 0 200 48" preserveAspectRatio="none" aria-hidden="true">
+          <path id="curvePath" fill="none" stroke="#ffb454" stroke-width="2" stroke-linecap="round"></path>
+        </svg>
+        <div id="curveMarker" class="curve-marker" hidden></div>
+      </div>
     </div>
 
     <div class="ctl-row">
@@ -193,6 +204,7 @@
   const playIcon=document.getElementById('playIcon');
   const ringFg=document.getElementById('ringFg');
   const curvePath=document.getElementById('curvePath');
+  const curveMarker=document.getElementById('curveMarker');
   const updateBanner=document.getElementById('updateBanner');
   const updateBtn=document.getElementById('updateBtn');
   const presetGroup=document.getElementById('presetGroup');
@@ -223,6 +235,8 @@
   let lastBadgeMins=-1;
 
   const RING_C=2*Math.PI*46;
+
+  const CURVE_W=200, CURVE_H=48, CURVE_PAD=3;
 
   function fmt(ms){
     const total=Math.max(0,Math.ceil(ms/1000));
@@ -376,6 +390,7 @@
       timeDisplay.textContent='∞';
       updateRing();
       updateBadge();
+      updateCurveMarker();
       updatePosition();
       showNotification();
       return;
@@ -389,6 +404,7 @@
     timeDisplay.textContent=fmt(remaining);
     updateRing();
     updateBadge();
+    updateCurveMarker();
     updatePosition();
     showNotification();
   }
@@ -470,11 +486,10 @@
   }
 
   function drawCurve(){
-    const W=200,H=48,PAD=3;
     const pts=[];
     if(infiniteMode){
-      pts.push([PAD,H-PAD]);
-      pts.push([W-PAD,H-PAD]);
+      pts.push([CURVE_PAD,CURVE_H-CURVE_PAD]);
+      pts.push([CURVE_W-CURVE_PAD,CURVE_H-CURVE_PAD]);
     }else{
       const dur=durationMs/1000;
       const fadeIn=Math.min(1.2,dur/3);
@@ -485,15 +500,40 @@
         let y;
         if(t<fadeIn){ y=volume*(t/fadeIn); }
         else{ const u=(t-fadeIn)/tail; y=volume*(1-u*u); }
-        pts.push([PAD+(W-2*PAD)*(t/dur), H-PAD-(H-2*PAD)*y]);
+        pts.push([CURVE_PAD+(CURVE_W-2*CURVE_PAD)*(t/dur), CURVE_H-CURVE_PAD-(CURVE_H-2*CURVE_PAD)*y]);
       }
     }
     const d=pts.map(function(p,i){ return (i===0?'M':'L')+p[0].toFixed(1)+' '+p[1].toFixed(1); }).join(' ');
     curvePath.setAttribute('d',d);
   }
 
+  function curveValueAt(sec){
+    const dur=durationMs/1000;
+    const fadeIn=Math.min(1.2,dur/3);
+    const tail=dur-fadeIn;
+    if(sec<fadeIn){ return volume*(sec/fadeIn); }
+    const u=(sec-fadeIn)/tail;
+    return volume*(1-u*u);
+  }
+
+  function updateCurveMarker(){
+    if(!isPlaying || infiniteMode){
+      curveMarker.hidden=true;
+      return;
+    }
+    const remaining=Math.max(0,endTime-Date.now());
+    const tFrac=Math.max(0,Math.min(1,1-remaining/durationMs));
+    const yval=curveValueAt(tFrac*durationMs/1000);
+    const x=CURVE_PAD+(CURVE_W-2*CURVE_PAD)*tFrac;
+    const y=CURVE_H-CURVE_PAD-(CURVE_H-2*CURVE_PAD)*yval;
+    curveMarker.style.left=(x/CURVE_W*100)+'%';
+    curveMarker.style.top=(y/CURVE_H*100)+'%';
+    curveMarker.hidden=false;
+  }
+
   function updateUI(){
     updateRing();
+    updateCurveMarker();
     if(isPlaying){
       playBtn.setAttribute('aria-label','Arrêter la lecture');
       playIcon.textContent='■';
