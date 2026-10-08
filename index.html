@@ -53,7 +53,16 @@
     color:var(--accent);
     text-shadow:0 0 30px rgba(255,180,84,.25);
   }
-  #status{ color:var(--muted); font-size:.85rem; min-height:1.2em; }
+  #status{ color:var(--muted); font-size:.85rem; min-height:1.2em; display:flex; align-items:center; justify-content:center; gap:8px; }
+  #status.monitoring::before{
+    content:""; width:9px; height:9px; flex:none; border-radius:50%;
+    background:#ff4d5e; box-shadow:0 0 0 3px rgba(255,77,94,.18), 0 0 8px rgba(255,77,94,.65);
+  }
+  #status.playing::before{
+    content:""; width:0; height:0; flex:none;
+    border-top:6px solid transparent; border-bottom:6px solid transparent;
+    border-left:10px solid #52d273; filter:drop-shadow(0 0 4px rgba(82,210,115,.65));
+  }
   .play-btn{
     width:112px; height:112px; border-radius:50%;
     border:none; cursor:pointer;
@@ -65,6 +74,7 @@
     touch-action:manipulation;
   }
   .play-btn:active{ transform:scale(.94); }
+  .play-btn:disabled{ opacity:.6; cursor:default; }
   .ring-wrap{ position:relative; width:148px; height:148px; }
   .ring-wrap .play-btn{
     position:absolute; top:50%; left:50%;
@@ -115,7 +125,10 @@
     border-color:var(--accent);
     color:var(--accent);
   }
+  .pill:disabled{ opacity:.5; cursor:default; }
   .pill.infinite{ font-weight:800; }
+  .auto-toggle{ width:100%; flex:none; }
+  .auto-hint{ color:var(--muted); font-size:.75rem; line-height:1.4; }
   input[type=range]{
     width:100%; height:40px;
     accent-color:var(--accent);
@@ -124,15 +137,6 @@
   .slider-meta{ display:flex; justify-content:space-between; align-items:center; gap:14px; font-size:.85rem; color:var(--muted); }
   .slider-meta input{ flex:1; min-width:0; }
   .slider-meta .value{ color:var(--text); font-weight:600; font-variant-numeric:tabular-nums; flex-shrink:0; }
-  .curve{ width:100%; height:36px; display:block; }
-  .curve-wrap{ position:relative; }
-  .curve-marker{
-    position:absolute; width:8px; height:8px; border-radius:50%;
-    background:var(--accent); border:2px solid var(--bg);
-    transform:translate(-50%,-50%); pointer-events:none;
-    box-shadow:0 0 6px rgba(255,180,84,.6);
-    transition:left .25s linear, top .25s linear;
-  }
   .foot{ text-align:center; color:var(--muted); font-size:.7rem; margin-top:auto; opacity:.7; }
 </style>
 </head>
@@ -177,22 +181,26 @@
     </div>
 
     <div class="ctl-row">
-      <span class="ctl-label">Évolution du volume</span>
-      <div class="curve-wrap">
-        <svg id="curveSvg" class="curve" viewBox="0 0 200 48" preserveAspectRatio="none" aria-hidden="true">
-          <path id="curvePath" fill="none" stroke="#ffb454" stroke-width="2" stroke-linecap="round"></path>
-        </svg>
-        <div id="curveMarker" class="curve-marker" hidden></div>
-      </div>
-    </div>
-
-    <div class="ctl-row">
       <span class="ctl-label">Volume</span>
       <input type="range" id="volumeSlider" min="0" max="100" value="60" aria-label="Volume">
     </div>
+
+    <div class="ctl-row">
+      <span class="ctl-label">Détection automatique</span>
+      <button id="autoBtn" class="pill auto-toggle" type="button" aria-pressed="false">Activer la surveillance</button>
+      <p id="autoHint" class="auto-hint">Le son du micro est analysé uniquement sur ce téléphone.</p>
+    </div>
+
+    <div class="ctl-row">
+      <span class="ctl-label">Sensibilité de détection</span>
+      <div class="slider-meta">
+        <input type="range" id="sensitivitySlider" min="0" max="100" value="50" aria-label="Sensibilité de détection">
+        <span class="value" id="sensitivityValue">50 %</span>
+      </div>
+    </div>
   </section>
 
-  <p class="foot">Écran maintenu allumé pendant la lecture</p>
+  <p class="foot">Écran maintenu allumé pendant la lecture et la surveillance</p>
 </main>
 
 <script>
@@ -203,14 +211,16 @@
   const playBtn=document.getElementById('playBtn');
   const playIcon=document.getElementById('playIcon');
   const ringFg=document.getElementById('ringFg');
-  const curvePath=document.getElementById('curvePath');
-  const curveMarker=document.getElementById('curveMarker');
   const updateBanner=document.getElementById('updateBanner');
   const updateBtn=document.getElementById('updateBtn');
   const presetGroup=document.getElementById('presetGroup');
   const durationSlider=document.getElementById('durationSlider');
   const durationValue=document.getElementById('durationValue');
   const volumeSlider=document.getElementById('volumeSlider');
+  const autoBtn=document.getElementById('autoBtn');
+  const autoHint=document.getElementById('autoHint');
+  const sensitivitySlider=document.getElementById('sensitivitySlider');
+  const sensitivityValue=document.getElementById('sensitivityValue');
 
   let ctx=null;
   let noiseSource=null;
@@ -221,12 +231,14 @@
   let noiseBuffer=null;
 
   let isPlaying=false;
+  let isStarting=false;
   let infiniteMode=false;
   let durationMs=30*60*1000;
   let volume=0.6;
   let endTime=0;
   let tickInterval=null;
   let wakeLock=null;
+  let wakeLockRequest=null;
   let swReg=null;
   let lastNotifBody=null;
   let mediaSessionReady=false;
@@ -234,9 +246,26 @@
   let reloadPending=false;
   let lastBadgeMins=-1;
 
+  let autoEnabled=false;
+  let micStream=null;
+  let micSource=null;
+  let analyser=null;
+  let timeData=null;
+  let frequencyData=null;
+  let detectionInterval=null;
+  let rearmTimeout=null;
+  let sensitivity=50;
+  let noiseFloorDb=-60;
+  let hasNoiseFloor=false;
+  let calibrationUntil=0;
+  let cryCandidateMs=0;
+  let autoStatus='Le son du micro est analysé uniquement sur ce téléphone.';
+
   const RING_C=2*Math.PI*46;
 
-  const CURVE_W=200, CURVE_H=48, CURVE_PAD=3;
+  const DETECTION_INTERVAL_MS=100;
+  const CRY_DURATION_MS=1600;
+  const REARM_DELAY_MS=5000;
 
   function fmt(ms){
     const total=Math.max(0,Math.ceil(ms/1000));
@@ -256,6 +285,14 @@
       for(let i=0;i<len;i++){ data[i]=Math.random()*2-1; }
     }
     return buffer;
+  }
+
+  function ensureAudioContext(){
+    if(ctx) return true;
+    const AC=window.AudioContext||window.webkitAudioContext;
+    if(!AC) return false;
+    ctx=new AC();
+    return true;
   }
 
   function buildGraph(){
@@ -327,18 +364,32 @@
   }
 
   async function startAudio(){
-    if(!ctx){
-      const AC=window.AudioContext||window.webkitAudioContext;
-      if(!AC){ statusEl.textContent='Audio non supporté'; return; }
-      ctx=new AC();
-    }
+    if(isPlaying || isStarting) return;
+    if(!ensureAudioContext()){ statusEl.textContent='Audio non supporté'; return; }
+    isStarting=true;
+    playBtn.disabled=true;
+    clearInterval(detectionInterval);
+    detectionInterval=null;
+    clearTimeout(rearmTimeout);
+    rearmTimeout=null;
     setupMediaSession();
-    if(ctx.state==='suspended'){ ctx.resume(); }
-    buildGraph();
+    if(ctx.state==='suspended'){
+      try{ await ctx.resume(); }catch(e){}
+    }
+    try{ buildGraph(); }
+    catch(e){
+      isStarting=false;
+      playBtn.disabled=false;
+      statusEl.textContent='Impossible de démarrer l’audio';
+      if(autoEnabled) startDetection();
+      return;
+    }
     if(masterVolume){ masterVolume.gain.value=volume; }
     scheduleEnvelope();
     endTime=Date.now()+durationMs;
     isPlaying=true;
+    isStarting=false;
+    playBtn.disabled=false;
     startTicker();
     requestWakeLock();
     setPlaybackState('playing');
@@ -351,7 +402,7 @@
     isPlaying=false;
     clearInterval(tickInterval);
     tickInterval=null;
-    releaseWakeLock();
+    if(!autoEnabled) releaseWakeLock();
     updateBadge();
     setPlaybackState('none');
     closeNotification();
@@ -366,6 +417,19 @@
       }catch(e){}
       setTimeout(teardown,350);
     }
+    if(autoEnabled){
+      autoStatus='Reprise de l’écoute dans quelques secondes…';
+      clearTimeout(rearmTimeout);
+      rearmTimeout=setTimeout(function(){
+        rearmTimeout=null;
+        if(autoEnabled && !isPlaying){
+          autoStatus='Surveillance active';
+          cryCandidateMs=0;
+          startDetection();
+          updateUI();
+        }
+      },REARM_DELAY_MS);
+    }
     updateUI();
   }
 
@@ -375,9 +439,190 @@
     try{ if(hum2Osc){ hum2Osc.stop(); } }catch(e){}
     try{ if(noiseSource){ noiseSource.stop(); } }catch(e){}
     try{ if(masterVolume){ masterVolume.disconnect(); } }catch(e){}
-    ctx.close().catch(function(){});
-    ctx=null; noiseSource=null; humOsc=null; hum2Osc=null;
+    noiseSource=null; humOsc=null; hum2Osc=null;
     envelope=null; masterVolume=null; noiseBuffer=null;
+    if(ctx && !autoEnabled){
+      const oldCtx=ctx;
+      ctx=null;
+      oldCtx.close().catch(function(){});
+    }
+  }
+
+  function stopDetection(){
+    clearInterval(detectionInterval);
+    detectionInterval=null;
+    clearTimeout(rearmTimeout);
+    rearmTimeout=null;
+    cryCandidateMs=0;
+  }
+
+  function stopMicrophone(){
+    try{ if(micSource){ micSource.disconnect(); } }catch(e){}
+    try{ if(analyser){ analyser.disconnect(); } }catch(e){}
+    if(micStream){
+      micStream.getTracks().forEach(function(track){ track.stop(); });
+    }
+    micStream=null;
+    micSource=null;
+    analyser=null;
+    timeData=null;
+    frequencyData=null;
+  }
+
+  function detectionThreshold(){
+    const ratio=sensitivity/100;
+    const absoluteThreshold=-22-ratio*28;
+    const margin=14-ratio*8;
+    return Math.max(absoluteThreshold,noiseFloorDb+margin);
+  }
+
+  function voiceBandRatio(){
+    analyser.getByteFrequencyData(frequencyData);
+    const hzPerBin=(ctx.sampleRate/2)/frequencyData.length;
+    let total=0;
+    let voice=0;
+    for(let i=1;i<frequencyData.length;i++){
+      const hz=i*hzPerBin;
+      if(hz>8000) break;
+      if(hz<80) continue;
+      const level=frequencyData[i];
+      total+=level;
+      if(hz>=250 && hz<=4000) voice+=level;
+    }
+    return total>0 ? voice/total : 0;
+  }
+
+  function analyzeMicrophone(){
+    if(!autoEnabled || isPlaying || !analyser || !ctx || ctx.state!=='running') return;
+    analyser.getFloatTimeDomainData(timeData);
+    let sum=0;
+    for(let i=0;i<timeData.length;i++) sum+=timeData[i]*timeData[i];
+    const rms=Math.sqrt(sum/timeData.length);
+    const db=Math.max(-100,20*Math.log10(Math.max(rms,0.00001)));
+
+    if(Date.now()<calibrationUntil){
+      if(!hasNoiseFloor){ noiseFloorDb=db; hasNoiseFloor=true; }
+      else noiseFloorDb=noiseFloorDb*.85+db*.15;
+      if(autoStatus!=='Calibration du bruit ambiant…'){
+        autoStatus='Calibration du bruit ambiant…';
+        updateUI();
+      }
+      return;
+    }
+
+    const threshold=detectionThreshold();
+    const cryLike=db>=threshold && voiceBandRatio()>=0.35;
+    if(cryLike){
+      cryCandidateMs+=DETECTION_INTERVAL_MS;
+    }else{
+      cryCandidateMs=Math.max(0,cryCandidateMs-DETECTION_INTERVAL_MS*2);
+      if(db<threshold){ noiseFloorDb=noiseFloorDb*.995+db*.005; }
+    }
+
+    const nextStatus=cryCandidateMs>=300 ? 'Son prolongé détecté…' : 'Surveillance active';
+    if(nextStatus!==autoStatus){
+      autoStatus=nextStatus;
+      updateUI();
+    }
+    if(cryCandidateMs>=CRY_DURATION_MS){
+      stopDetection();
+      autoStatus='Pleurs détectés, démarrage…';
+      updateUI();
+      startAudio();
+    }
+  }
+
+  function startDetection(){
+    clearInterval(detectionInterval);
+    detectionInterval=null;
+    if(!autoEnabled || isPlaying || !analyser) return;
+    detectionInterval=setInterval(analyzeMicrophone,DETECTION_INTERVAL_MS);
+    analyzeMicrophone();
+  }
+
+  function disableAutoMonitoring(message){
+    autoEnabled=false;
+    stopDetection();
+    stopMicrophone();
+    autoStatus=message || 'Le son du micro est analysé uniquement sur ce téléphone.';
+    if(!isPlaying) teardown();
+    if(!isPlaying) releaseWakeLock();
+    updateUI();
+  }
+
+  async function enableAutoMonitoring(){
+    if(infiniteMode){
+      autoStatus='Choisissez une durée finie avant d’activer la surveillance.';
+      updateUI();
+      return;
+    }
+    if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia){
+      autoStatus='Microphone non supporté par ce navigateur.';
+      updateUI();
+      return;
+    }
+    if(!ensureAudioContext()){
+      autoStatus='Audio non supporté par ce navigateur.';
+      updateUI();
+      return;
+    }
+
+    autoBtn.disabled=true;
+    autoStatus='Autorisation du microphone…';
+    updateUI();
+    try{
+      if(ctx.state==='suspended') await ctx.resume();
+      micStream=await navigator.mediaDevices.getUserMedia({
+        audio:{
+          echoCancellation:{ideal:false},
+          noiseSuppression:{ideal:false},
+          autoGainControl:{ideal:false},
+          channelCount:1
+        }
+      });
+      if(infiniteMode){
+        stopMicrophone();
+        autoStatus='Choisissez une durée finie avant d’activer la surveillance.';
+        teardown();
+        return;
+      }
+      if(ctx.state==='suspended') await ctx.resume();
+      if(infiniteMode){
+        stopMicrophone();
+        autoStatus='Choisissez une durée finie avant d’activer la surveillance.';
+        teardown();
+        return;
+      }
+      micSource=ctx.createMediaStreamSource(micStream);
+      analyser=ctx.createAnalyser();
+      analyser.fftSize=2048;
+      analyser.smoothingTimeConstant=.35;
+      timeData=new Float32Array(analyser.fftSize);
+      frequencyData=new Uint8Array(analyser.frequencyBinCount);
+      micSource.connect(analyser);
+      micStream.getTracks().forEach(function(track){
+        track.addEventListener('ended',function(){
+          if(autoEnabled) disableAutoMonitoring('Le microphone a été déconnecté.');
+        });
+      });
+      autoEnabled=true;
+      hasNoiseFloor=false;
+      calibrationUntil=Date.now()+2500;
+      cryCandidateMs=0;
+      autoStatus='Calibration du bruit ambiant…';
+      requestWakeLock();
+      startDetection();
+    }catch(e){
+      stopMicrophone();
+      autoEnabled=false;
+      autoStatus=e && e.name==='NotAllowedError'
+        ? 'Accès au microphone refusé. Autorisez-le dans les réglages du site.'
+        : 'Impossible d’activer le microphone.';
+      teardown();
+    }finally{
+      autoBtn.disabled=false;
+      updateUI();
+    }
   }
 
   function startTicker(){
@@ -391,7 +636,6 @@
       timeDisplay.textContent='∞';
       updateRing();
       updateBadge();
-      updateCurveMarker();
       updatePosition();
       showNotification();
       return;
@@ -405,7 +649,6 @@
     timeDisplay.textContent=fmt(remaining);
     updateRing();
     updateBadge();
-    updateCurveMarker();
     updatePosition();
     showNotification();
   }
@@ -443,6 +686,7 @@
       localStorage.setItem('margododo.durationMin',String(Math.round(durationMs/60000)));
       localStorage.setItem('margododo.infinite',infiniteMode?'1':'0');
       localStorage.setItem('margododo.volume',String(Math.round(volume*100)));
+      localStorage.setItem('margododo.sensitivity',String(sensitivity));
     }catch(e){}
   }
 
@@ -459,6 +703,11 @@
       if(!isNaN(v)){
         volume=Math.max(0,Math.min(100,v))/100;
         volumeSlider.value=v;
+      }
+      const s=parseInt(localStorage.getItem('margododo.sensitivity'),10);
+      if(!isNaN(s)){
+        sensitivity=Math.max(0,Math.min(100,s));
+        sensitivitySlider.value=sensitivity;
       }
     }catch(e){}
   }
@@ -486,55 +735,18 @@
     }catch(e){}
   }
 
-  function drawCurve(){
-    const pts=[];
-    if(infiniteMode){
-      pts.push([CURVE_PAD,CURVE_H-CURVE_PAD]);
-      pts.push([CURVE_W-CURVE_PAD,CURVE_H-CURVE_PAD]);
-    }else{
-      const dur=durationMs/1000;
-      const fadeIn=Math.min(1.2,dur/3);
-      const tail=dur-fadeIn;
-      const n=120;
-      for(let i=0;i<n;i++){
-        const t=(i/(n-1))*dur;
-        let y;
-        if(t<fadeIn){ y=volume*(t/fadeIn); }
-        else{ const u=(t-fadeIn)/tail; y=volume*(1-u*u); }
-        pts.push([CURVE_PAD+(CURVE_W-2*CURVE_PAD)*(t/dur), CURVE_H-CURVE_PAD-(CURVE_H-2*CURVE_PAD)*y]);
-      }
-    }
-    const d=pts.map(function(p,i){ return (i===0?'M':'L')+p[0].toFixed(1)+' '+p[1].toFixed(1); }).join(' ');
-    curvePath.setAttribute('d',d);
-  }
-
-  function curveValueAt(sec){
-    const dur=durationMs/1000;
-    const fadeIn=Math.min(1.2,dur/3);
-    const tail=dur-fadeIn;
-    if(sec<fadeIn){ return volume*(sec/fadeIn); }
-    const u=(sec-fadeIn)/tail;
-    return volume*(1-u*u);
-  }
-
-  function updateCurveMarker(){
-    if(!isPlaying || infiniteMode){
-      curveMarker.hidden=true;
-      return;
-    }
-    const remaining=Math.max(0,endTime-Date.now());
-    const tFrac=Math.max(0,Math.min(1,1-remaining/durationMs));
-    const yval=curveValueAt(tFrac*durationMs/1000);
-    const x=CURVE_PAD+(CURVE_W-2*CURVE_PAD)*tFrac;
-    const y=CURVE_H-CURVE_PAD-(CURVE_H-2*CURVE_PAD)*yval;
-    curveMarker.style.left=(x/CURVE_W*100)+'%';
-    curveMarker.style.top=(y/CURVE_H*100)+'%';
-    curveMarker.hidden=false;
-  }
-
   function updateUI(){
     updateRing();
-    updateCurveMarker();
+    statusEl.classList.toggle('monitoring',autoEnabled && !isPlaying);
+    statusEl.classList.toggle('playing',isPlaying);
+    autoBtn.classList.toggle('active',autoEnabled);
+    autoBtn.setAttribute('aria-pressed',autoEnabled?'true':'false');
+    autoBtn.textContent=autoEnabled?'Désactiver la surveillance':'Activer la surveillance';
+    playBtn.disabled=isStarting;
+    sensitivityValue.textContent=sensitivity+' %';
+    autoHint.textContent=autoEnabled && isPlaying
+      ? 'Surveillance suspendue pendant la lecture.'
+      : autoStatus;
     if(isPlaying){
       playBtn.setAttribute('aria-label','Arrêter la lecture');
       playIcon.textContent='■';
@@ -542,23 +754,36 @@
     }else{
       playBtn.setAttribute('aria-label','Lancer la lecture');
       playIcon.textContent='▶';
-      statusEl.textContent='Prêt';
+      statusEl.textContent=autoEnabled ? autoStatus : 'Prêt';
       updateDurationLabel();
     }
   }
 
   function requestWakeLock(){
-    if('wakeLock' in navigator){
-      navigator.wakeLock.request('screen').then(function(lock){
+    if('wakeLock' in navigator && !wakeLock && !wakeLockRequest && document.visibilityState==='visible'){
+      wakeLockRequest=navigator.wakeLock.request('screen');
+      wakeLockRequest.then(function(lock){
+        wakeLockRequest=null;
+        if((!isPlaying && !autoEnabled) || document.visibilityState!=='visible'){
+          lock.release().catch(function(){});
+          return;
+        }
         wakeLock=lock;
-      }).catch(function(){ wakeLock=null; });
+        lock.addEventListener('release',function(){
+          if(wakeLock===lock) wakeLock=null;
+        });
+      }).catch(function(){
+        wakeLockRequest=null;
+        wakeLock=null;
+      });
     }
   }
 
   function releaseWakeLock(){
     if(wakeLock){
-      try{ wakeLock.release(); }catch(e){}
+      const lock=wakeLock;
       wakeLock=null;
+      try{ lock.release(); }catch(e){}
     }
   }
 
@@ -678,6 +903,9 @@
     if(!btn) return;
     if(btn.dataset.inf==='1'){
       infiniteMode=true;
+      if(autoEnabled){
+        disableAutoMonitoring('Surveillance désactivée : choisissez une durée finie.');
+      }
     }else{
       infiniteMode=false;
       durationMs=parseInt(btn.dataset.min,10)*60*1000;
@@ -686,7 +914,6 @@
     updatePresetActive();
     updateDurationLabel();
     saveSettings();
-    drawCurve();
     if(isPlaying){ reschedule(); }
   });
 
@@ -696,7 +923,6 @@
     updatePresetActive();
     updateDurationLabel();
     saveSettings();
-    drawCurve();
     if(isPlaying){ reschedule(); }
   });
 
@@ -704,22 +930,49 @@
     volume=volumeSlider.value/100;
     if(masterVolume && ctx){ masterVolume.gain.setValueAtTime(volume,ctx.currentTime); }
     saveSettings();
-    drawCurve();
+  });
+
+  autoBtn.addEventListener('click',function(){
+    if(autoEnabled){ disableAutoMonitoring(); }
+    else{ enableAutoMonitoring(); }
+  });
+
+  sensitivitySlider.addEventListener('input',function(){
+    sensitivity=parseInt(sensitivitySlider.value,10);
+    sensitivityValue.textContent=sensitivity+' %';
+    saveSettings();
   });
 
   document.addEventListener('visibilitychange',function(){
     if(document.visibilityState==='visible'){
-      if(isPlaying){ requestWakeLock(); showNotification(true); }
+      if(isPlaying || autoEnabled){ requestWakeLock(); }
+      if(autoEnabled && ctx && ctx.state==='suspended'){
+        ctx.resume().catch(function(){
+          autoStatus='Touchez l’écran pour reprendre la surveillance.';
+          updateUI();
+        });
+      }
+      if(isPlaying){ showNotification(true); }
       if(swReg){ swReg.update().catch(function(){}); }
     }
   });
+
+  document.addEventListener('pointerdown',function(){
+    if(autoEnabled && ctx && ctx.state==='suspended'){
+      ctx.resume().then(function(){
+        autoStatus='Surveillance active';
+        startDetection();
+        updateUI();
+      }).catch(function(){});
+    }
+  },{passive:true});
 
   registerSW();
   loadSettings();
   updatePresetActive();
   updateDurationLabel();
-  drawCurve();
   updateRing();
+  updateUI();
 })();
 </script>
 </body>

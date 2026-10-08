@@ -12,7 +12,8 @@ Application web autonome qui diffuse un bruit blanc de type sèche-cheveux pour 
 - **Anneau de progression** autour du bouton lecture : le cercle se vide au fil du temps restant.
 - **Badge d'icône** (Badging API) : le lanceur Android affiche les minutes restantes pendant la lecture.
 - **Réglages mémorisés** : durée, volume et mode ∞ conservés entre deux sessions (`localStorage`).
-- **Aperçu de la courbe** : visualisation de la décroissance du volume pour la durée choisie.
+- **Détection automatique** : le microphone peut surveiller les sons prolongés dans la bande vocale et lancer le bruit blanc pendant la durée configurée.
+- **Sensibilité réglable** : seuil de détection de 0 à 100, mémorisé entre deux sessions.
 - **Mise à jour automatique** : bandeau "Nouvelle version disponible" quand une nouvelle version est déployée (stratégie *network-first* sur les navigations).
 - **Écran maintenu allumé** pendant la lecture (Wake Lock API).
 - **PWA installable** : ajout à l'écran d'accueil, fonctionnement hors ligne.
@@ -29,6 +30,15 @@ Application web autonome qui diffuse un bruit blanc de type sèche-cheveux pour 
 1. Ouvrir l'URL dans Chrome sur Android, puis **Ajouter à l'écran d'accueil** (obligatoire pour les notifications et l'installation PWA).
 2. Ouvrir l'app installée, appuyer sur **Lecture** → autoriser les notifications.
 3. Le son se lance, la notification s'affiche (temps restant, bouton Arrêter) et le contrôle média apparaît au verrouillage.
+
+### Surveillance automatique
+
+1. Choisir une durée finie : le mode automatique n'est pas disponible avec la durée ∞.
+2. Régler la sensibilité, puis appuyer sur **Activer la surveillance** et autoriser le microphone.
+3. Laisser l'application visible : elle calibre le bruit ambiant pendant 2,5 secondes, puis maintient l'écran allumé.
+4. Un son assez fort et prolongé dans la bande de la voix déclenche la lecture. La surveillance reprend cinq secondes après son arrêt.
+
+Le signal du microphone est analysé localement en temps réel. Il n'est ni enregistré, ni conservé, ni envoyé sur Internet. Cette détection acoustique simple peut confondre des pleurs avec une voix, une télévision ou un autre bruit prolongé : ajuster la sensibilité selon la chambre.
 
 ### Utilisation avec une enceinte Bluetooth
 
@@ -63,6 +73,8 @@ python3 -m http.server 8000
 ## Limites connues
 
 - Si l'app est **balaуée** des apps récentes, le navigateur stoppe l'audio (limite du web) et la notification reste affichée avec un temps figé ; son tap rouvre l'app.
+- La surveillance automatique exige que l'application reste visible avec l'écran allumé. Android peut suspendre l'accès au microphone si l'application passe en arrière-plan ou si l'écran est verrouillé.
+- L'autorisation du microphone et l'activation de la surveillance doivent être renouvelées après chaque rechargement de l'application.
 - Le volume réglé dans l'app est le **volume de départ** de la courbe ; le volume physique du téléphone reste le volume maître global.
 - Les notifications web et le badge d'icône requièrent une PWA installée (Android récent / iOS 16.4+).
 
@@ -71,4 +83,5 @@ python3 -m http.server 8000
 - Le son est un buffer de bruit blanc en boucle, filtré (highpass ~80 Hz, lowpass ~3,2 kHz, renforcement ~1,1 kHz) avec un bourdonnement à 100/200 Hz très discret.
 - L'enveloppe de volume est programmée sur l'horloge audio (`setValueCurveAtTime`) : fondu d'entrée ~1,2 s puis décroissance quadratique jusqu'à 0 exactement à la fin — aucun clic, fiable même si l'onglet est mis en veille.
 - Le compte à rebours est ancré sur `Date.now()`, ce qui le rend tolérant au throttling des onglets en arrière-plan.
+- La détection mesure le niveau RMS, le compare à un seuil absolu et au bruit ambiant calibré, puis vérifie que l'énergie est concentrée entre 250 Hz et 4 kHz. Le déclenchement demande environ 1,6 seconde de signal concordant.
 - Le service worker sert les navigations en *network-first* (avec repli cache hors ligne) et les assets en cache-first ; une nouvelle version déployée est détectée automatiquement et proposée via un bandeau de rechargement.

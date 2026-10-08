@@ -1,6 +1,6 @@
 "use strict";
 
-const CACHE='margododo-v3';
+const CACHE='margododo-v4';
 const ASSETS=[
   './',
   './index.html',
