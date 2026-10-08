@@ -14,6 +14,7 @@ Application web autonome qui diffuse un bruit blanc de type sèche-cheveux pour 
 - **Réglages mémorisés** : durée, volume et mode ∞ conservés entre deux sessions (`localStorage`).
 - **Détection automatique** : le microphone peut surveiller les sons prolongés dans la bande vocale et lancer le bruit blanc pendant la durée configurée.
 - **Sensibilité réglable** : seuil de détection de 0 à 100, mémorisé entre deux sessions.
+- **Alerte distante ntfy** : chaque déclenchement automatique publie une notification prioritaire sur le topic `margododo`.
 - **Mise à jour automatique** : bandeau "Nouvelle version disponible" quand une nouvelle version est déployée (stratégie *network-first* sur les navigations).
 - **Écran maintenu allumé** pendant la lecture (Wake Lock API).
 - **PWA installable** : ajout à l'écran d'accueil, fonctionnement hors ligne.
@@ -38,7 +39,9 @@ Application web autonome qui diffuse un bruit blanc de type sèche-cheveux pour 
 3. Laisser l'application visible : elle calibre le bruit ambiant pendant 2,5 secondes, puis maintient l'écran allumé.
 4. Un son assez fort et prolongé dans la bande de la voix déclenche la lecture. La surveillance reprend cinq secondes après son arrêt.
 
-Le signal du microphone est analysé localement en temps réel. Il n'est ni enregistré, ni conservé, ni envoyé sur Internet. Cette détection acoustique simple peut confondre des pleurs avec une voix, une télévision ou un autre bruit prolongé : ajuster la sensibilité selon la chambre.
+Le signal du microphone est analysé localement en temps réel. Il n'est ni enregistré, ni conservé, ni envoyé sur Internet. Lors d'un déclenchement, seuls l'événement et la durée configurée sont transmis à `ntfy.sh`. Cette détection acoustique simple peut confondre des pleurs avec une voix, une télévision ou un autre bruit prolongé : ajuster la sensibilité selon la chambre.
+
+Pour recevoir l'alerte sur un autre téléphone, installer l'application ntfy, s'abonner au topic `margododo` sur le serveur `https://ntfy.sh`, puis autoriser ses notifications. Le topic est public et facile à deviner : un tiers peut potentiellement s'y abonner ou y publier de fausses alertes.
 
 ### Utilisation avec une enceinte Bluetooth
 
@@ -75,6 +78,7 @@ python3 -m http.server 8000
 - Si l'app est **balaуée** des apps récentes, le navigateur stoppe l'audio (limite du web) et la notification reste affichée avec un temps figé ; son tap rouvre l'app.
 - La surveillance automatique exige que l'application reste visible avec l'écran allumé. Android peut suspendre l'accès au microphone si l'application passe en arrière-plan ou si l'écran est verrouillé.
 - L'autorisation du microphone et l'activation de la surveillance doivent être renouvelées après chaque rechargement de l'application.
+- L'alerte ntfy nécessite une connexion Internet. Son échec ne bloque pas le démarrage du bruit blanc et n'est pas retenté automatiquement.
 - Le volume réglé dans l'app est le **volume de départ** de la courbe ; le volume physique du téléphone reste le volume maître global.
 - Les notifications web et le badge d'icône requièrent une PWA installée (Android récent / iOS 16.4+).
 
@@ -84,4 +88,5 @@ python3 -m http.server 8000
 - L'enveloppe de volume est programmée sur l'horloge audio (`setValueCurveAtTime`) : fondu d'entrée ~1,2 s puis décroissance quadratique jusqu'à 0 exactement à la fin — aucun clic, fiable même si l'onglet est mis en veille.
 - Le compte à rebours est ancré sur `Date.now()`, ce qui le rend tolérant au throttling des onglets en arrière-plan.
 - La détection mesure le niveau RMS, le compare à un seuil absolu et au bruit ambiant calibré, puis vérifie que l'énergie est concentrée entre 250 Hz et 4 kHz. Le déclenchement demande environ 1,6 seconde de signal concordant.
+- Après un déclenchement automatique réussi, l'application publie un POST non bloquant vers `https://ntfy.sh/margododo` avec une priorité élevée. Les démarrages manuels ne publient rien.
 - Le service worker sert les navigations en *network-first* (avec repli cache hors ligne) et les assets en cache-first ; une nouvelle version déployée est détectée automatiquement et proposée via un bandeau de rechargement.

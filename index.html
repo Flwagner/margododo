@@ -266,6 +266,7 @@
   const DETECTION_INTERVAL_MS=100;
   const CRY_DURATION_MS=1600;
   const REARM_DELAY_MS=5000;
+  const NTFY_URL='https://ntfy.sh/margododo?title=margododo&priority=high&tags=baby';
 
   function fmt(ms){
     const total=Math.max(0,Math.ceil(ms/1000));
@@ -275,6 +276,18 @@
     const mm=String(m).padStart(2,'0');
     const ss=String(s).padStart(2,'0');
     return h>0 ? h+':'+mm+':'+ss : mm+':'+ss;
+  }
+
+  function publishCryNotification(){
+    const minutes=Math.round(durationMs/60000);
+    fetch(NTFY_URL,{
+      method:'POST',
+      body:'Pleurs détectés. Le bruit blanc a démarré pour '+minutes+' min.'
+    }).then(function(response){
+      if(!response.ok) throw new Error('ntfy HTTP '+response.status);
+    }).catch(function(error){
+      console.warn('Notification ntfy non envoyée',error);
+    });
   }
 
   function createNoiseBuffer(ac){
@@ -363,7 +376,7 @@
     envelope.gain.setValueCurveAtTime(curve,start,remaining);
   }
 
-  async function startAudio(){
+  async function startAudio(source){
     if(isPlaying || isStarting) return;
     if(!ensureAudioContext()){ statusEl.textContent='Audio non supporté'; return; }
     isStarting=true;
@@ -393,9 +406,10 @@
     startTicker();
     requestWakeLock();
     setPlaybackState('playing');
+    updateUI();
+    if(source==='detection') publishCryNotification();
     await requestNotifPermission();
     showNotification(true);
-    updateUI();
   }
 
   function stopAudio(){
@@ -528,7 +542,7 @@
       stopDetection();
       autoStatus='Pleurs détectés, démarrage…';
       updateUI();
-      startAudio();
+      startAudio('detection');
     }
   }
 
