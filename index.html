@@ -137,6 +137,10 @@
   .slider-meta{ display:flex; justify-content:space-between; align-items:center; gap:14px; font-size:.85rem; color:var(--muted); }
   .slider-meta input{ flex:1; min-width:0; }
   .slider-meta .value{ color:var(--text); font-weight:600; font-variant-numeric:tabular-nums; flex-shrink:0; }
+  .sound-meter{ position:relative; height:18px; border-radius:9px; background:rgba(255,255,255,.08); }
+  .sound-level{ height:100%; width:0; border-radius:9px; background:#52d273; transition:width .1s linear; }
+  .sound-meter.above .sound-level{ background:var(--accent); }
+  .sound-threshold{ position:absolute; top:-4px; bottom:-4px; width:3px; background:var(--text); transform:translateX(-50%); }
   .foot{ text-align:center; color:var(--muted); font-size:.7rem; margin-top:auto; opacity:.7; }
 </style>
 </head>
@@ -192,11 +196,21 @@
     </div>
 
     <div class="ctl-row">
-      <span class="ctl-label">Sensibilité de détection</span>
+      <label class="ctl-label" for="sensitivitySlider">Sensibilité de détection</label>
       <div class="slider-meta">
         <input type="range" id="sensitivitySlider" min="0" max="100" value="50" aria-label="Sensibilité de détection">
         <span class="value" id="sensitivityValue">50 %</span>
       </div>
+      <p class="auto-hint">Plus la sensibilité est élevée, plus le seuil est bas. Réglage mémorisé, sans calibration ambiante.</p>
+      <div class="slider-meta">
+        <span id="micLevelValue">Micro inactif</span>
+        <span id="thresholdValue">Seuil : −40 dBFS</span>
+      </div>
+      <div id="soundMeter" class="sound-meter" role="meter" aria-label="Niveau du microphone en dBFS" aria-valuemin="-80" aria-valuemax="0" aria-valuenow="-80" aria-valuetext="Micro inactif">
+        <div id="soundLevel" class="sound-level"></div>
+        <div id="soundThreshold" class="sound-threshold" aria-hidden="true"></div>
+      </div>
+      <p class="auto-hint">Barre : son actuel · trait : seuil. Déclenchement après 1,2 s de son admissible cumulée sur les 3 dernières secondes. Le filtre vocal reste actif.</p>
     </div>
   </section>
 
@@ -221,6 +235,11 @@
   const autoHint=document.getElementById('autoHint');
   const sensitivitySlider=document.getElementById('sensitivitySlider');
   const sensitivityValue=document.getElementById('sensitivityValue');
+  const micLevelValue=document.getElementById('micLevelValue');
+  const thresholdValue=document.getElementById('thresholdValue');
+  const soundMeter=document.getElementById('soundMeter');
+  const soundLevel=document.getElementById('soundLevel');
+  const soundThreshold=document.getElementById('soundThreshold');
 
   let ctx=null;
   let noiseSource=null;
@@ -255,16 +274,17 @@
   let detectionInterval=null;
   let rearmTimeout=null;
   let sensitivity=50;
-  let noiseFloorDb=-60;
-  let hasNoiseFloor=false;
-  let calibrationUntil=0;
+  let detectionSamples=[];
+  let lastDetectionTime=null;
+  let micLevelDb=null;
   let cryCandidateMs=0;
   let autoStatus='Le son du micro est analysé uniquement sur ce téléphone.';
 
   const RING_C=2*Math.PI*46;
 
   const DETECTION_INTERVAL_MS=100;
-  const CRY_DURATION_MS=1600;
+  const CRY_DURATION_MS=1200;
+  const DETECTION_WINDOW_MS=3000;
   const REARM_DELAY_MS=5000;
   const NTFY_URL='https://ntfy.sh/margododo?title=margododo&priority=high&tags=baby';
 
@@ -381,10 +401,7 @@
     if(!ensureAudioContext()){ statusEl.textContent='Audio non supporté'; return; }
     isStarting=true;
     playBtn.disabled=true;
-    clearInterval(detectionInterval);
-    detectionInterval=null;
-    clearTimeout(rearmTimeout);
-    rearmTimeout=null;
+    stopDetection();
     setupMediaSession();
     if(ctx.state==='suspended'){
       try{ await ctx.resume(); }catch(e){}
@@ -438,7 +455,6 @@
         rearmTimeout=null;
         if(autoEnabled && !isPlaying){
           autoStatus='Surveillance active';
-          cryCandidateMs=0;
           startDetection();
           updateUI();
         }
@@ -467,6 +483,14 @@
     detectionInterval=null;
     clearTimeout(rearmTimeout);
     rearmTimeout=null;
+    resetDetectionWindow();
+    micLevelDb=null;
+    updateSoundMeter();
+  }
+
+  function resetDetectionWindow(){
+    detectionSamples=[];
+    lastDetectionTime=null;
     cryCandidateMs=0;
   }
 
@@ -484,10 +508,39 @@
   }
 
   function detectionThreshold(){
-    const ratio=sensitivity/100;
-    const absoluteThreshold=-22-ratio*28;
-    const margin=14-ratio*8;
-    return Math.max(absoluteThreshold,noiseFloorDb+margin);
+    return -20-sensitivity*.4;
+  }
+
+  function updateSoundMeter(){
+    const threshold=detectionThreshold();
+    const position=function(db){ return Math.max(0,Math.min(100,(db+80)/80*100)); };
+    const label=micLevelDb===null
+      ? (autoEnabled ? 'Analyse en pause' : 'Micro inactif')
+      : 'Micro : '+Math.round(micLevelDb)+' dBFS';
+    micLevelValue.textContent=label;
+    thresholdValue.textContent='Seuil : '+Math.round(threshold)+' dBFS';
+    soundLevel.style.width=(micLevelDb===null ? 0 : position(micLevelDb))+'%';
+    soundThreshold.style.left=position(threshold)+'%';
+    soundMeter.classList.toggle('above',micLevelDb!==null && micLevelDb>=threshold);
+    soundMeter.setAttribute('aria-valuenow',String(micLevelDb===null ? -80 : Math.max(-80,Math.min(0,micLevelDb))));
+    soundMeter.setAttribute('aria-valuetext',label+' ; seuil : '+Math.round(threshold)+' dBFS');
+    sensitivitySlider.setAttribute('aria-valuetext',sensitivity+' %, seuil '+Math.round(threshold)+' dBFS');
+  }
+
+  function accumulateDetection(now,cryLike){
+    // Never count an unsampled gap (background tab, suspended audio) as sound.
+    const elapsed=lastDetectionTime===null ? 0 : Math.max(0,Math.min(DETECTION_INTERVAL_MS,now-lastDetectionTime));
+    if(lastDetectionTime!==null && now-lastDetectionTime>DETECTION_INTERVAL_MS*3){
+      detectionSamples=[];
+    }
+    lastDetectionTime=now;
+    if(cryLike && elapsed>0) detectionSamples.push({start:now-elapsed,end:now});
+    const cutoff=now-DETECTION_WINDOW_MS;
+    detectionSamples=detectionSamples.filter(function(sample){ return sample.end>cutoff; });
+    cryCandidateMs=detectionSamples.reduce(function(total,sample){
+      return total+sample.end-Math.max(sample.start,cutoff);
+    },0);
+    return cryCandidateMs;
   }
 
   function voiceBandRatio(){
@@ -507,31 +560,24 @@
   }
 
   function analyzeMicrophone(){
-    if(!autoEnabled || isPlaying || !analyser || !ctx || ctx.state!=='running') return;
+    if(!autoEnabled || isPlaying || !analyser || !ctx) return;
+    if(ctx.state!=='running' || document.visibilityState!=='visible'){
+      resetDetectionWindow();
+      micLevelDb=null;
+      updateSoundMeter();
+      return;
+    }
     analyser.getFloatTimeDomainData(timeData);
     let sum=0;
     for(let i=0;i<timeData.length;i++) sum+=timeData[i]*timeData[i];
     const rms=Math.sqrt(sum/timeData.length);
     const db=Math.max(-100,20*Math.log10(Math.max(rms,0.00001)));
 
-    if(Date.now()<calibrationUntil){
-      if(!hasNoiseFloor){ noiseFloorDb=db; hasNoiseFloor=true; }
-      else noiseFloorDb=noiseFloorDb*.85+db*.15;
-      if(autoStatus!=='Calibration du bruit ambiant…'){
-        autoStatus='Calibration du bruit ambiant…';
-        updateUI();
-      }
-      return;
-    }
-
+    micLevelDb=db;
+    updateSoundMeter();
     const threshold=detectionThreshold();
     const cryLike=db>=threshold && voiceBandRatio()>=0.35;
-    if(cryLike){
-      cryCandidateMs+=DETECTION_INTERVAL_MS;
-    }else{
-      cryCandidateMs=Math.max(0,cryCandidateMs-DETECTION_INTERVAL_MS*2);
-      if(db<threshold){ noiseFloorDb=noiseFloorDb*.995+db*.005; }
-    }
+    accumulateDetection(performance.now(),cryLike);
 
     const nextStatus=cryCandidateMs>=300 ? 'Son prolongé détecté…' : 'Surveillance active';
     if(nextStatus!==autoStatus){
@@ -549,6 +595,7 @@
   function startDetection(){
     clearInterval(detectionInterval);
     detectionInterval=null;
+    resetDetectionWindow();
     if(!autoEnabled || isPlaying || !analyser) return;
     detectionInterval=setInterval(analyzeMicrophone,DETECTION_INTERVAL_MS);
     analyzeMicrophone();
@@ -620,10 +667,7 @@
         });
       });
       autoEnabled=true;
-      hasNoiseFloor=false;
-      calibrationUntil=Date.now()+2500;
-      cryCandidateMs=0;
-      autoStatus='Calibration du bruit ambiant…';
+      autoStatus='Surveillance active';
       requestWakeLock();
       startDetection();
     }catch(e){
@@ -758,6 +802,7 @@
     autoBtn.textContent=autoEnabled?'Désactiver la surveillance':'Activer la surveillance';
     playBtn.disabled=isStarting;
     sensitivityValue.textContent=sensitivity+' %';
+    updateSoundMeter();
     autoHint.textContent=autoEnabled && isPlaying
       ? 'Surveillance suspendue pendant la lecture.'
       : autoStatus;
@@ -953,7 +998,9 @@
 
   sensitivitySlider.addEventListener('input',function(){
     sensitivity=parseInt(sensitivitySlider.value,10);
+    resetDetectionWindow();
     sensitivityValue.textContent=sensitivity+' %';
+    updateSoundMeter();
     saveSettings();
   });
 

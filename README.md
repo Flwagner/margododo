@@ -13,7 +13,8 @@ Application web autonome qui diffuse un bruit blanc de type sèche-cheveux pour 
 - **Badge d'icône** (Badging API) : le lanceur Android affiche les minutes restantes pendant la lecture.
 - **Réglages mémorisés** : durée, volume et mode ∞ conservés entre deux sessions (`localStorage`).
 - **Détection automatique** : le microphone peut surveiller les sons prolongés dans la bande vocale et lancer le bruit blanc pendant la durée configurée.
-- **Sensibilité réglable** : seuil de détection de 0 à 100, mémorisé entre deux sessions.
+- **Sensibilité réglable** : curseur de 0 à 100, mémorisé entre deux sessions, qui règle directement le seuil de −20 à −60 dBFS (plus sensible = seuil plus bas), sans calibration ambiante.
+- **Jauge du microphone** : niveau sonore en direct et repère du seuil de déclenchement sur une même échelle.
 - **Alerte distante ntfy** : chaque déclenchement automatique publie une notification prioritaire sur le topic `margododo`.
 - **Mise à jour automatique** : bandeau "Nouvelle version disponible" quand une nouvelle version est déployée (stratégie *network-first* sur les navigations).
 - **Écran maintenu allumé** pendant la lecture (Wake Lock API).
@@ -36,8 +37,11 @@ Application web autonome qui diffuse un bruit blanc de type sèche-cheveux pour 
 
 1. Choisir une durée finie : le mode automatique n'est pas disponible avec la durée ∞.
 2. Régler la sensibilité, puis appuyer sur **Activer la surveillance** et autoriser le microphone.
-3. Laisser l'application visible : elle calibre le bruit ambiant pendant 2,5 secondes, puis maintient l'écran allumé.
-4. Un son assez fort et prolongé dans la bande de la voix déclenche la lecture. La surveillance reprend cinq secondes après son arrêt.
+3. Laisser l'application visible : la surveillance commence immédiatement, sans mesurer ni apprendre le bruit ambiant, et maintient l'écran allumé.
+4. Observer la jauge du microphone et ajuster la sensibilité pour placer le trait du seuil au-dessus du bruit blanc déjà présent, mais en dessous des pleurs si leurs niveaux le permettent. Les dBFS indiquent un niveau numérique, pas un volume acoustique en dB SPL.
+5. Des sons au-dessus du seuil et satisfaisant le filtre vocal déclenchent la lecture lorsqu'ils cumulent 1,2 seconde sur les 3 dernières secondes. Les pauses sont tolérées. La surveillance reprend cinq secondes après l'arrêt de la lecture.
+
+Le seuil ne s'adapte jamais automatiquement à la pièce. Un bruit blanc ou une voix qui dépasse le seuil et satisfait le filtre vocal peut donc déclencher la lecture. La jauge est en pause pendant la lecture et le délai de reprise. Un changement de sensibilité efface la fenêtre de détection précédente.
 
 Le signal du microphone est analysé localement en temps réel. Il n'est ni enregistré, ni conservé, ni envoyé sur Internet. Lors d'un déclenchement, seuls l'événement et la durée configurée sont transmis à `ntfy.sh`. Cette détection acoustique simple peut confondre des pleurs avec une voix, une télévision ou un autre bruit prolongé : ajuster la sensibilité selon la chambre.
 
@@ -87,6 +91,6 @@ python3 -m http.server 8000
 - Le son est un buffer de bruit blanc en boucle, filtré (highpass ~80 Hz, lowpass ~3,2 kHz, renforcement ~1,1 kHz) avec un bourdonnement à 100/200 Hz très discret.
 - L'enveloppe de volume est programmée sur l'horloge audio (`setValueCurveAtTime`) : fondu d'entrée ~1,2 s puis décroissance quadratique jusqu'à 0 exactement à la fin — aucun clic, fiable même si l'onglet est mis en veille.
 - Le compte à rebours est ancré sur `Date.now()`, ce qui le rend tolérant au throttling des onglets en arrière-plan.
-- La détection mesure le niveau RMS, le compare à un seuil absolu et au bruit ambiant calibré, puis vérifie que l'énergie est concentrée entre 250 Hz et 4 kHz. Le déclenchement demande environ 1,6 seconde de signal concordant.
+- La détection mesure le niveau RMS toutes les 100 ms et le compare uniquement au seuil réglé, puis applique un filtre fréquentiel approximatif entre 250 Hz et 4 kHz. Une fenêtre glissante cumule les passages concordants : déclenchement à 1,2 seconde sur 3 secondes. Les interruptions d'analyse ne comptent pas comme du son et une longue interruption remet la fenêtre à zéro. Aucun modèle d'IA ni calibration du bruit ambiant n'est utilisé.
 - Après un déclenchement automatique réussi, l'application publie un POST non bloquant vers `https://ntfy.sh/margododo` avec une priorité élevée. Les démarrages manuels ne publient rien.
 - Le service worker sert les navigations en *network-first* (avec repli cache hors ligne) et les assets en cache-first ; une nouvelle version déployée est détectée automatiquement et proposée via un bandeau de rechargement.
