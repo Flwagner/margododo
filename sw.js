@@ -1,9 +1,10 @@
 "use strict";
 
-const CACHE='margododo-v6';
+const CACHE='margododo-v8';
 const ASSETS=[
   './',
   './index.html',
+  './remote.js',
   './manifest.webmanifest',
   './icon.svg',
   './icon-192.png',
@@ -32,6 +33,8 @@ self.addEventListener('message',function(e){
 });
 
 self.addEventListener('fetch',function(e){
+  // Never intercept/cache ntfy's live SSE streams or cross-origin requests.
+  if(new URL(e.request.url).origin!==self.location.origin) return;
   if(e.request.method!=='GET') return;
   if(e.request.mode==='navigate'){
     e.respondWith(

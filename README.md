@@ -16,6 +16,7 @@ Application web autonome qui diffuse un bruit blanc de type sèche-cheveux pour 
 - **Sensibilité réglable** : curseur de 0 à 100, mémorisé entre deux sessions, qui règle directement le seuil de −20 à −60 dBFS (plus sensible = seuil plus bas), sans calibration ambiante.
 - **Jauge du microphone** : niveau sonore en direct et repère du seuil de déclenchement sur une même échelle.
 - **Alerte distante ntfy** : chaque déclenchement automatique publie une notification prioritaire sur le topic `margododo`.
+- **Mode Local / Remote** : les mêmes contrôles permettent de lire/arrêter le son, choisir la durée ou activer/désactiver la détection sur un autre téléphone via ntfy.
 - **Mise à jour automatique** : bandeau "Nouvelle version disponible" quand une nouvelle version est déployée (stratégie *network-first* sur les navigations).
 - **Écran maintenu allumé** pendant la lecture (Wake Lock API).
 - **PWA installable** : ajout à l'écran d'accueil, fonctionnement hors ligne.
@@ -47,6 +48,22 @@ Le signal du microphone est analysé localement en temps réel. Il n'est ni enre
 
 Pour recevoir l'alerte sur un autre téléphone, installer l'application ntfy, s'abonner au topic `margododo` sur le serveur `https://ntfy.sh`, puis autoriser ses notifications. Le topic est public et facile à deviner : un tiers peut potentiellement s'y abonner ou y publier de fausses alertes.
 
+### Télécommande : téléphone A dans la chambre, B dans le salon
+
+1. Sur **A**, conserver le mode **Local**, appuyer une fois sur **Lecture** pour autoriser l'audio, puis arrêter le son si nécessaire. Le contexte audio reste disponible après l'arrêt.
+2. Pour pouvoir aussi commander la détection depuis B, activer une première fois la **surveillance sur A** et autoriser le microphone. La surveillance peut ensuite être désactivée ; l'autorisation est retenue pour cette session.
+3. Laisser **A branché, écran allumé, application visible**. Après la préparation audio, l'application demande de maintenir l'écran allumé même quand le son est arrêté. Le navigateur ou le système peut refuser cette demande : vérifier l'écran.
+4. Sur **B**, ouvrir la même application et sélectionner **Remote**. Aucune association ni application ntfy supplémentaire n'est nécessaire. Le dernier mode choisi est mémorisé sur chaque téléphone.
+5. Attendre la réponse de A, puis utiliser les contrôles habituels : lecture/arrêt, durée (y compris ∞) et surveillance. Le volume, la sensibilité et la jauge micro restent uniquement sur A. En Remote, aucun son n'est joué et aucun accès au microphone n'est demandé sur B.
+
+L'état affiché vient des confirmations de A, pas du simple envoi d'une commande. Une commande en cours bloque temporairement les autres contrôles. **Actualiser l'état** permet de vérifier que A répond. L'état est aussi demandé à l'ouverture, à la reconnexion, au retour au premier plan et toutes les cinq minutes pendant que la télécommande est visible ; les changements sur A sont transmis spontanément. L'âge de la dernière réponse est affiché et l'état est considéré ancien après six minutes. Le compte à rebours est calculé sur B à partir de l'heure de fin reçue, sans publication à chaque seconde.
+
+Les échanges utilisent les topics fixes **`margododo-commands`** et **`margododo-state`** sur `https://ntfy.sh`, séparés des alertes de pleurs existantes. Ils sont **publics, sans authentification** : toute personne connaissant ces topics peut lire les états ou envoyer des commandes. Prévu pour **un seul téléphone Local et une télécommande Remote** ; plusieurs téléphones Local recevraient les demandes d'état et rendraient la sélection ambiguë. Ne pas s'abonner à ces topics techniques dans l'application ntfy pour recevoir les alertes : utiliser seulement `margododo`.
+
+Les publications de commande/état ne sont pas mises en cache et les abonnements ne demandent aucun historique. Les doublons et messages de plus de quinze secondes sont ignorés. Les commandes ciblent la session de A découverte par la télécommande ; après rechargement de A, actualiser l'état sur B. Maintenir les horloges des deux téléphones à l'heure automatique. Un délai de dix secondes sans confirmation affiche une erreur ; l'exécution d'une commande déjà en cours n'est pas annulée et aucun nouvel envoi automatique n'est effectué.
+
+Le contrôle distant nécessite Internet sur les deux appareils et reste soumis aux quotas/disponibilité de ntfy.sh. Une erreur ntfy n'arrête pas le fonctionnement local. Les permissions du navigateur ne peuvent pas être accordées depuis B : si A demande une interaction ou une autorisation, intervenir sur A. Après un rechargement, repasser par la préparation audio/micro sur A. Passer A en Remote arrête sa lecture et sa surveillance locales et ferme son microphone.
+
 ### Utilisation avec une enceinte Bluetooth
 
 Le montage (téléphone → enceinte BT dans la chambre) fonctionne sans configuration particulière. Points de vigilance :
@@ -63,6 +80,7 @@ Le montage (téléphone → enceinte BT dans la chambre) fonctionne sans configu
 | Fichier | Rôle |
 |---|---|
 | `index.html` | Application complète : UI, génération du son, timer, Media Session, notifications, réglages |
+| `remote.js` | Transport ntfy : commandes, confirmations, fraîcheur des états et reconnexion |
 | `sw.js` | Service worker : clics de notification, cache hors ligne (*network-first* navigations) |
 | `manifest.webmanifest` | Manifeste PWA |
 | `icon.svg`, `icon-192.png`, `icon-512.png` | Icônes |

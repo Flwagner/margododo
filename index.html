@@ -142,6 +142,11 @@
   .sound-meter.above .sound-level{ background:var(--accent); }
   .sound-threshold{ position:absolute; top:-4px; bottom:-4px; width:3px; background:var(--text); transform:translateX(-50%); }
   .foot{ text-align:center; color:var(--muted); font-size:.7rem; margin-top:auto; opacity:.7; }
+  [hidden]{ display:none !important; }
+  .mode-switch{ display:flex; gap:8px; width:100%; }
+  .connection{ width:100%; text-align:center; color:var(--muted); font-size:.8rem; line-height:1.5; }
+  .connection button{ color:var(--accent); background:none; border:0; text-decoration:underline; cursor:pointer; padding:8px; font:inherit; }
+  .mode-context{ font-weight:600; color:var(--text); }
 </style>
 </head>
 <body>
@@ -154,6 +159,16 @@
     <h1>margo<span>dodo</span></h1>
     <p class="subtitle">Bruit blanc de sèche-cheveux pour endormir bébé</p>
   </header>
+
+  <div class="mode-switch" role="group" aria-label="Mode de contrôle">
+    <button id="localModeBtn" class="pill active" type="button" aria-pressed="true">Local</button>
+    <button id="remoteModeBtn" class="pill" type="button" aria-pressed="false">Remote</button>
+  </div>
+  <div class="connection">
+    <p id="modeContext" class="mode-context">Contrôle de ce téléphone</p>
+    <p id="connectionStatus" role="status">Connexion ntfy…</p>
+    <button id="refreshRemoteBtn" type="button" hidden>Actualiser l’état</button>
+  </div>
 
   <div id="timeDisplay">30:00</div>
   <div id="status">Prêt</div>
@@ -184,7 +199,7 @@
       </div>
     </div>
 
-    <div class="ctl-row">
+    <div class="ctl-row" id="volumeControl">
       <span class="ctl-label">Volume</span>
       <input type="range" id="volumeSlider" min="0" max="100" value="60" aria-label="Volume">
     </div>
@@ -195,7 +210,7 @@
       <p id="autoHint" class="auto-hint">Le son du micro est analysé uniquement sur ce téléphone.</p>
     </div>
 
-    <div class="ctl-row">
+    <div class="ctl-row" id="sensitivityControl">
       <label class="ctl-label" for="sensitivitySlider">Sensibilité de détection</label>
       <div class="slider-meta">
         <input type="range" id="sensitivitySlider" min="0" max="100" value="50" aria-label="Sensibilité de détection">
@@ -214,9 +229,10 @@
     </div>
   </section>
 
-  <p class="foot">Écran maintenu allumé pendant la lecture et la surveillance</p>
+  <p class="foot" id="footerHint">Écran maintenu allumé pendant la lecture et la surveillance</p>
 </main>
 
+<script src="remote.js"></script>
 <script>
 "use strict";
 (function(){
@@ -240,6 +256,20 @@
   const soundMeter=document.getElementById('soundMeter');
   const soundLevel=document.getElementById('soundLevel');
   const soundThreshold=document.getElementById('soundThreshold');
+  const localModeBtn=document.getElementById('localModeBtn');
+  const remoteModeBtn=document.getElementById('remoteModeBtn');
+  const modeContext=document.getElementById('modeContext');
+  const connectionStatus=document.getElementById('connectionStatus');
+  const refreshRemoteBtn=document.getElementById('refreshRemoteBtn');
+  const volumeControl=document.getElementById('volumeControl');
+  const sensitivityControl=document.getElementById('sensitivityControl');
+  const footerHint=document.getElementById('footerHint');
+  let mode='local';
+  let bridge=null;
+  let microphoneAuthorized=false;
+  let monitoringStarting=false;
+  let teardownTimer=null;
+  let sliderEditing=false;
 
   let ctx=null;
   let noiseSource=null;
@@ -325,6 +355,7 @@
     const AC=window.AudioContext||window.webkitAudioContext;
     if(!AC) return false;
     ctx=new AC();
+    ctx.addEventListener('statechange',function(){ updateUI(); });
     return true;
   }
 
@@ -397,14 +428,25 @@
   }
 
   async function startAudio(source){
-    if(isPlaying || isStarting) return;
+    if(mode!=='local' || isStarting) return false;
+    if(isPlaying) return true;
     if(!ensureAudioContext()){ statusEl.textContent='Audio non supporté'; return; }
     isStarting=true;
+    clearTimeout(teardownTimer);
+    teardown();
     playBtn.disabled=true;
     stopDetection();
     setupMediaSession();
     if(ctx.state==='suspended'){
-      try{ await ctx.resume(); }catch(e){}
+      try{
+        await Promise.race([ctx.resume(),new Promise(function(resolve,reject){ setTimeout(function(){ reject(new Error('Audio suspendu')); },2000); })]);
+      }catch(e){}
+    }
+    if(ctx.state!=='running'){
+      isStarting=false;
+      autoStatus='Appuyez sur Lecture sur le téléphone chambre pour autoriser l’audio.';
+      updateUI();
+      return false;
     }
     try{ buildGraph(); }
     catch(e){
@@ -412,7 +454,7 @@
       playBtn.disabled=false;
       statusEl.textContent='Impossible de démarrer l’audio';
       if(autoEnabled) startDetection();
-      return;
+      return false;
     }
     if(masterVolume){ masterVolume.gain.value=volume; }
     scheduleEnvelope();
@@ -425,15 +467,14 @@
     setPlaybackState('playing');
     updateUI();
     if(source==='detection') publishCryNotification();
-    await requestNotifPermission();
-    showNotification(true);
+    requestNotifPermission().then(function(){ if(isPlaying && mode==='local') showNotification(true); });
+    return true;
   }
 
   function stopAudio(){
     isPlaying=false;
     clearInterval(tickInterval);
     tickInterval=null;
-    if(!autoEnabled) releaseWakeLock();
     updateBadge();
     setPlaybackState('none');
     closeNotification();
@@ -446,7 +487,8 @@
         envelope.gain.linearRampToValueAtTime(0, now+0.2);
         noiseSource.stop(now+0.25);
       }catch(e){}
-      setTimeout(teardown,350);
+      clearTimeout(teardownTimer);
+      teardownTimer=setTimeout(teardown,350);
     }
     if(autoEnabled){
       autoStatus='Reprise de l’écoute dans quelques secondes…';
@@ -471,7 +513,7 @@
     try{ if(masterVolume){ masterVolume.disconnect(); } }catch(e){}
     noiseSource=null; humOsc=null; hum2Osc=null;
     envelope=null; masterVolume=null; noiseBuffer=null;
-    if(ctx && !autoEnabled){
+    if(ctx && mode==='remote'){
       const oldCtx=ctx;
       ctx=null;
       oldCtx.close().catch(function(){});
@@ -607,11 +649,12 @@
     stopMicrophone();
     autoStatus=message || 'Le son du micro est analysé uniquement sur ce téléphone.';
     if(!isPlaying) teardown();
-    if(!isPlaying) releaseWakeLock();
     updateUI();
   }
 
   async function enableAutoMonitoring(){
+    if(mode!=='local' || monitoringStarting) return;
+    if(autoEnabled) return;
     if(infiniteMode){
       autoStatus='Choisissez une durée finie avant d’activer la surveillance.';
       updateUI();
@@ -628,7 +671,7 @@
       return;
     }
 
-    autoBtn.disabled=true;
+    monitoringStarting=true;
     autoStatus='Autorisation du microphone…';
     updateUI();
     try{
@@ -641,6 +684,7 @@
           channelCount:1
         }
       });
+      microphoneAuthorized=true;
       if(infiniteMode){
         stopMicrophone();
         autoStatus='Choisissez une durée finie avant d’activer la surveillance.';
@@ -678,7 +722,7 @@
         : 'Impossible d’activer le microphone.';
       teardown();
     }finally{
-      autoBtn.disabled=false;
+      monitoringStarting=false;
       updateUI();
     }
   }
@@ -719,6 +763,7 @@
   }
 
   function updateDurationLabel(){
+    if(mode==='remote') return;
     if(infiniteMode){
       durationValue.textContent='∞';
       if(!isPlaying) timeDisplay.textContent='∞';
@@ -729,12 +774,13 @@
   }
 
   function updatePresetActive(){
-    const mins=Math.round(durationMs/60000);
+    const view=displayState();
+    const mins=Math.round(view.durationMs/60000);
     presetGroup.querySelectorAll('.pill').forEach(function(b){
       if(b.dataset.inf==='1'){
-        b.classList.toggle('active',infiniteMode);
+        b.classList.toggle('active',view.infinite);
       }else{
-        b.classList.toggle('active', !infiniteMode && parseInt(b.dataset.min,10)===mins);
+        b.classList.toggle('active', !view.infinite && parseInt(b.dataset.min,10)===mins);
       }
     });
   }
@@ -771,9 +817,10 @@
   }
 
   function updateRing(){
+    const view=displayState();
     let frac=1;
-    if(isPlaying && !infiniteMode){
-      frac=Math.max(0,Math.min(1,(endTime-Date.now())/durationMs));
+    if(view.playing && !view.infinite){
+      frac=Math.max(0,Math.min(1,(view.endTime-Date.now())/view.durationMs));
     }
     ringFg.style.strokeDashoffset=String(RING_C*(1-frac));
   }
@@ -794,6 +841,11 @@
   }
 
   function updateUI(){
+    renderConnection();
+    if(mode==='remote'){
+      renderRemote();
+      return;
+    }
     updateRing();
     statusEl.classList.toggle('monitoring',autoEnabled && !isPlaying);
     statusEl.classList.toggle('playing',isPlaying);
@@ -801,6 +853,8 @@
     autoBtn.setAttribute('aria-pressed',autoEnabled?'true':'false');
     autoBtn.textContent=autoEnabled?'Désactiver la surveillance':'Activer la surveillance';
     playBtn.disabled=isStarting;
+    autoBtn.disabled=monitoringStarting;
+    localModeBtn.disabled=remoteModeBtn.disabled=isStarting || monitoringStarting;
     sensitivityValue.textContent=sensitivity+' %';
     updateSoundMeter();
     autoHint.textContent=autoEnabled && isPlaying
@@ -813,9 +867,10 @@
     }else{
       playBtn.setAttribute('aria-label','Lancer la lecture');
       playIcon.textContent='▶';
-      statusEl.textContent=autoEnabled ? autoStatus : 'Prêt';
+      statusEl.textContent=autoEnabled ? autoStatus : (ctx && ctx.state==='running' ? 'Prêt' : 'Prêt · audio à autoriser sur ce téléphone');
       updateDurationLabel();
     }
+    if(bridge) bridge.stateChanged();
   }
 
   function requestWakeLock(){
@@ -823,7 +878,7 @@
       wakeLockRequest=navigator.wakeLock.request('screen');
       wakeLockRequest.then(function(lock){
         wakeLockRequest=null;
-        if((!isPlaying && !autoEnabled) || document.visibilityState!=='visible'){
+        if(mode!=='local' || (!isPlaying && !autoEnabled && (!ctx || ctx.state!=='running')) || document.visibilityState!=='visible'){
           lock.release().catch(function(){});
           return;
         }
@@ -855,9 +910,9 @@
         artist:'margododo',
         artwork:[{src:'icon-512.png',sizes:'512x512',type:'image/png'}]
       });
-      navigator.mediaSession.setActionHandler('play',function(){ startAudio(); });
-      navigator.mediaSession.setActionHandler('pause',function(){ stopAudio(); });
-      navigator.mediaSession.setActionHandler('stop',function(){ stopAudio(); });
+      navigator.mediaSession.setActionHandler('play',function(){ if(mode==='local') startAudio(); });
+      navigator.mediaSession.setActionHandler('pause',function(){ if(mode==='local') stopAudio(); });
+      navigator.mediaSession.setActionHandler('stop',function(){ if(mode==='local') stopAudio(); });
     }catch(e){}
   }
 
@@ -935,7 +990,8 @@
   }
 
   playBtn.addEventListener('click',function(){
-    if(isPlaying){ stopAudio(); }else{ startAudio(); }
+    const view=displayState();
+    dispatchCommand(view.playing ? 'stop' : 'play');
   });
 
   updateBtn.addEventListener('click',function(){
@@ -950,7 +1006,7 @@
 
   if('serviceWorker' in navigator){
     navigator.serviceWorker.addEventListener('message',function(e){
-      if(e.data && e.data.type==='stop'){ stopAudio(); }
+      if(mode==='local' && e.data && e.data.type==='stop'){ stopAudio(); }
     });
     navigator.serviceWorker.addEventListener('controllerchange',function(){
       if(reloadPending){ window.location.reload(); }
@@ -960,29 +1016,20 @@
   presetGroup.addEventListener('click',function(e){
     const btn=e.target.closest('.pill');
     if(!btn) return;
-    if(btn.dataset.inf==='1'){
-      infiniteMode=true;
-      if(autoEnabled){
-        disableAutoMonitoring('Surveillance désactivée : choisissez une durée finie.');
-      }
-    }else{
-      infiniteMode=false;
-      durationMs=parseInt(btn.dataset.min,10)*60*1000;
-      durationSlider.value=btn.dataset.min;
-    }
-    updatePresetActive();
-    updateDurationLabel();
-    saveSettings();
-    if(isPlaying){ reschedule(); }
+    dispatchCommand('duration',{infinite:btn.dataset.inf==='1',minutes:btn.dataset.inf==='1' ? Math.round(displayState().durationMs/60000) : Number(btn.dataset.min)});
   });
 
   durationSlider.addEventListener('input',function(){
-    infiniteMode=false;
-    durationMs=parseInt(durationSlider.value,10)*60*1000;
-    updatePresetActive();
-    updateDurationLabel();
-    saveSettings();
-    if(isPlaying){ reschedule(); }
+    if(mode==='remote'){
+      sliderEditing=true;
+      durationValue.textContent=durationSlider.value+' min · à confirmer';
+    }else dispatchCommand('duration',{infinite:false,minutes:Number(durationSlider.value)});
+  });
+  durationSlider.addEventListener('change',function(){
+    if(mode==='remote'){
+      sliderEditing=false;
+      dispatchCommand('duration',{infinite:false,minutes:Number(durationSlider.value)});
+    }
   });
 
   volumeSlider.addEventListener('input',function(){
@@ -992,8 +1039,7 @@
   });
 
   autoBtn.addEventListener('click',function(){
-    if(autoEnabled){ disableAutoMonitoring(); }
-    else{ enableAutoMonitoring(); }
+    dispatchCommand('auto',!displayState().autoEnabled);
   });
 
   sensitivitySlider.addEventListener('input',function(){
@@ -1005,8 +1051,13 @@
   });
 
   document.addEventListener('visibilitychange',function(){
+    if(bridge && mode==='remote'){
+      if(document.visibilityState==='visible') bridge.request('state');
+      return;
+    }
+    if(bridge) bridge.stateChanged();
     if(document.visibilityState==='visible'){
-      if(isPlaying || autoEnabled){ requestWakeLock(); }
+      if(isPlaying || autoEnabled || (ctx && ctx.state==='running')){ requestWakeLock(); }
       if(autoEnabled && ctx && ctx.state==='suspended'){
         ctx.resume().catch(function(){
           autoStatus='Touchez l’écran pour reprendre la surveillance.';
@@ -1019,17 +1070,182 @@
   });
 
   document.addEventListener('pointerdown',function(){
-    if(autoEnabled && ctx && ctx.state==='suspended'){
+    if(mode==='local' && ctx && ctx.state==='suspended'){
       ctx.resume().then(function(){
-        autoStatus='Surveillance active';
-        startDetection();
+        if(autoEnabled && !rearmTimeout){ autoStatus='Surveillance active'; startDetection(); }
         updateUI();
       }).catch(function(){});
     }
   },{passive:true});
 
+  function localState(){
+    return {
+      playing:isPlaying,autoEnabled:autoEnabled,infinite:infiniteMode,
+      durationMs:durationMs,endTime:endTime,
+      audioReady:!!ctx && ctx.state==='running',microphoneAuthorized:microphoneAuthorized,
+      visible:document.visibilityState==='visible',busy:isStarting || monitoringStarting
+    };
+  }
+
+  function displayState(){
+    if(mode==='local') return localState();
+    return bridge && bridge.state ? bridge.state : {
+      playing:false,autoEnabled:false,infinite:false,durationMs:30*60000,endTime:0
+    };
+  }
+
+  function renderConnection(){
+    const remote=mode==='remote';
+    localModeBtn.classList.toggle('active',!remote);
+    remoteModeBtn.classList.toggle('active',remote);
+    localModeBtn.setAttribute('aria-pressed',String(!remote));
+    remoteModeBtn.setAttribute('aria-pressed',String(remote));
+    volumeControl.hidden=sensitivityControl.hidden=remote;
+    modeContext.textContent=remote ? 'Contrôle du téléphone chambre' : 'Contrôle de ce téléphone';
+    footerHint.textContent=remote
+      ? 'Aucun son ni microphone sur ce téléphone. Laissez le téléphone chambre allumé et visible.'
+      : 'Laissez cette page visible. Premier appui sur Lecture pour l’audio, sur Surveillance pour le micro.';
+    refreshRemoteBtn.hidden=!remote;
+    if(!bridge) return;
+    refreshRemoteBtn.disabled=!!bridge.pending || !bridge.connected;
+    if(bridge.error){ connectionStatus.textContent=bridge.error; return; }
+    if(!bridge.connected){ connectionStatus.textContent='Connexion ntfy interrompue ou en cours…'; return; }
+    if(!remote){
+      connectionStatus.textContent=ctx && ctx.state==='running'
+        ? 'Réception des commandes active · audio autorisé'
+        : 'Réception des commandes active · appuyez sur Lecture pour autoriser l’audio';
+    }else if(bridge.pending){
+      connectionStatus.textContent='En attente de confirmation du téléphone chambre…';
+    }else if(!bridge.isFresh()){
+      connectionStatus.textContent='Téléphone chambre sans réponse récente. Actualisez son état.';
+    }else{
+      const seconds=Math.floor((Date.now()-bridge.lastSeen)/1000);
+      const age=seconds<60 ? seconds+' s' : Math.floor(seconds/60)+' min';
+      connectionStatus.textContent='Dernière réponse du téléphone chambre il y a '+age+'.';
+    }
+  }
+
+  function renderRemote(){
+    const view=displayState();
+    const known=!!bridge && !!bridge.state;
+    const disabled=!bridge || !bridge.isFresh() || !!bridge.pending || !!view.busy;
+    localModeBtn.disabled=remoteModeBtn.disabled=false;
+    playBtn.disabled=autoBtn.disabled=durationSlider.disabled=disabled;
+    presetGroup.querySelectorAll('.pill').forEach(function(button){ button.disabled=disabled; });
+    statusEl.classList.toggle('monitoring',known && view.autoEnabled && !view.playing);
+    statusEl.classList.toggle('playing',known && view.playing);
+    statusEl.textContent=!known ? 'État du téléphone chambre inconnu'
+      : (!bridge.isFresh() ? 'Dernier état connu · à actualiser'
+        : (view.playing ? 'En lecture dans la chambre' : (view.autoEnabled ? 'Surveillance activée dans la chambre' : 'Arrêté dans la chambre')));
+    playIcon.textContent=view.playing ? '■' : '▶';
+    playBtn.setAttribute('aria-label',view.playing ? 'Arrêter dans la chambre' : 'Lancer dans la chambre');
+    autoBtn.classList.toggle('active',view.autoEnabled);
+    autoBtn.setAttribute('aria-pressed',String(view.autoEnabled));
+    autoBtn.textContent=view.autoEnabled ? 'Désactiver la surveillance' : 'Activer la surveillance';
+    autoHint.textContent=!known ? 'Ouvrez l’application en mode Local sur le téléphone chambre.'
+      : (!view.microphoneAuthorized ? 'Autorisez d’abord le micro en activant une fois la surveillance sur le téléphone chambre.'
+        : (view.infinite ? 'Choisissez une durée finie pour la surveillance.'
+          : (view.playing && view.autoEnabled ? 'Écoute suspendue pendant la lecture, puis reprise après 5 secondes.' : 'Commande de la surveillance du téléphone chambre.')));
+    if(!sliderEditing){
+      durationSlider.value=Math.round(view.durationMs/60000);
+      durationValue.textContent=view.infinite ? '∞' : Math.round(view.durationMs/60000)+' min';
+    }
+    updatePresetActive();
+    if(!known) timeDisplay.textContent='—';
+    else timeDisplay.textContent=view.infinite ? '∞' : fmt(view.playing ? view.endTime-Date.now() : view.durationMs);
+    updateRing();
+  }
+
+  async function executeLocalCommand(action,value,remote){
+    if(mode!=='local') throw new Error('Ce téléphone est en mode Remote.');
+    if(action==='state') return;
+    if(isStarting || monitoringStarting) throw new Error('Téléphone chambre occupé. Réessayez.');
+    if(remote && (action==='play' || (action==='auto' && value))){
+      if(document.visibilityState!=='visible') throw new Error('Ouvrez l’application sur le téléphone chambre et laissez l’écran allumé.');
+      if(!ctx || ctx.state!=='running') throw new Error('Appuyez sur Lecture sur le téléphone chambre pour autoriser l’audio.');
+      if(action==='auto' && !microphoneAuthorized) throw new Error('Activez une première fois la surveillance sur le téléphone chambre pour autoriser le micro.');
+      if(action==='auto' && navigator.permissions){
+        const permission=await navigator.permissions.query({name:'microphone'}).catch(function(){ return null; });
+        if(permission && permission.state!=='granted'){
+          microphoneAuthorized=false;
+          updateUI();
+          throw new Error('Autorisez à nouveau le microphone sur le téléphone chambre.');
+        }
+      }
+    }
+    if(action==='play'){
+      if(!await startAudio(remote ? 'remote' : 'manual')) throw new Error('Audio indisponible. Appuyez sur Lecture sur le téléphone chambre.');
+    }else if(action==='stop'){
+      if(isPlaying) stopAudio();
+    }else if(action==='auto'){
+      if(typeof value!=='boolean') throw new Error('Commande de surveillance invalide.');
+      if(value){
+        if(infiniteMode) throw new Error('Choisissez une durée finie avant d’activer la surveillance.');
+        await enableAutoMonitoring();
+        if(!autoEnabled) throw new Error(autoStatus);
+      }else disableAutoMonitoring();
+    }else if(action==='duration'){
+      if(!value || typeof value.infinite!=='boolean' || !Number.isInteger(value.minutes) || value.minutes<1 || value.minutes>120){
+        throw new Error('Durée invalide (1 à 120 minutes).');
+      }
+      infiniteMode=value.infinite;
+      durationMs=value.minutes*60000;
+      durationSlider.value=value.minutes;
+      if(infiniteMode && autoEnabled) disableAutoMonitoring('Surveillance désactivée : choisissez une durée finie.');
+      if(isPlaying) reschedule();
+      saveSettings();
+      updatePresetActive();
+      updateDurationLabel();
+    }else throw new Error('Commande inconnue.');
+    updateUI();
+  }
+
+  function dispatchCommand(action,value){
+    if(mode==='remote'){
+      bridge.request(action,value);
+      renderRemote();
+    }else executeLocalCommand(action,value,false).catch(function(error){
+      autoStatus=error.message;
+      updateUI();
+      statusEl.textContent=error.message;
+    });
+  }
+
+  function setMode(next){
+    if(mode===next || isStarting || monitoringStarting) return;
+    if(bridge) bridge.close();
+    if(next==='remote'){
+      disableAutoMonitoring();
+      if(isPlaying) stopAudio();
+      stopDetection();
+      clearTimeout(teardownTimer);
+      mode=next;
+      teardown();
+      releaseWakeLock();
+    }else mode=next;
+    sliderEditing=false;
+    try{ localStorage.setItem('margododo.mode',mode); }catch(e){}
+    durationSlider.disabled=false;
+    presetGroup.querySelectorAll('.pill').forEach(function(button){ button.disabled=false; });
+    durationSlider.value=Math.round(durationMs/60000);
+    if(bridge) bridge.start(mode);
+    updatePresetActive();
+    updateUI();
+  }
+
+  localModeBtn.addEventListener('click',function(){ setMode('local'); });
+  remoteModeBtn.addEventListener('click',function(){ setMode('remote'); });
+  refreshRemoteBtn.addEventListener('click',function(){ bridge.request('state'); });
+
   registerSW();
   loadSettings();
+  try{ if(localStorage.getItem('margododo.mode')==='remote') mode='remote'; }catch(e){}
+  bridge=new MargododoRemote({
+    getState:localState,
+    onCommand:function(action,value){ return executeLocalCommand(action,value,true); },
+    onChange:function(){ renderConnection(); if(mode==='remote') renderRemote(); }
+  });
+  bridge.start(mode);
   updatePresetActive();
   updateDurationLabel();
   updateRing();
