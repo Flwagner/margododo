@@ -1052,7 +1052,6 @@
 
   document.addEventListener('visibilitychange',function(){
     if(bridge && mode==='remote'){
-      if(document.visibilityState==='visible') bridge.request('state');
       return;
     }
     if(bridge) bridge.stateChanged();

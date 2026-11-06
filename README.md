@@ -58,9 +58,11 @@ Pour recevoir l'alerte sur un autre téléphone, installer l'application ntfy, s
 
 L'état affiché vient des confirmations de A, pas du simple envoi d'une commande. Une commande en cours bloque temporairement les autres contrôles. **Actualiser l'état** permet de vérifier que A répond. L'état est aussi demandé à l'ouverture, à la reconnexion, au retour au premier plan et toutes les cinq minutes pendant que la télécommande est visible ; les changements sur A sont transmis spontanément. L'âge de la dernière réponse est affiché et l'état est considéré ancien après six minutes. Le compte à rebours est calculé sur B à partir de l'heure de fin reçue, sans publication à chaque seconde.
 
+Sur les deux téléphones, le flux ntfy est rouvert au retour au premier plan, à la restauration de la page ou au retour du réseau. Une absence de messages de maintien de connexion pendant plus de 90 secondes déclenche aussi sa réouverture. Après une erreur réseau, les tentatives sont espacées progressivement jusqu'à 30 secondes. Si une commande reste sans confirmation, la télécommande tente une reconnexion et une nouvelle demande d'état après 30 secondes, uniquement lorsqu'elle est visible : **la commande elle-même n'est jamais renvoyée automatiquement**.
+
 Les échanges utilisent les topics fixes **`margododo-commands`** et **`margododo-state`** sur `https://ntfy.sh`, séparés des alertes de pleurs existantes. Ils sont **publics, sans authentification** : toute personne connaissant ces topics peut lire les états ou envoyer des commandes. Prévu pour **un seul téléphone Local et une télécommande Remote** ; plusieurs téléphones Local recevraient les demandes d'état et rendraient la sélection ambiguë. Ne pas s'abonner à ces topics techniques dans l'application ntfy pour recevoir les alertes : utiliser seulement `margododo`.
 
-Les publications de commande/état ne sont pas mises en cache et les abonnements ne demandent aucun historique. Les doublons et messages de plus de quinze secondes sont ignorés. Les commandes ciblent la session de A découverte par la télécommande ; après rechargement de A, actualiser l'état sur B. Maintenir les horloges des deux téléphones à l'heure automatique. Un délai de dix secondes sans confirmation affiche une erreur ; l'exécution d'une commande déjà en cours n'est pas annulée et aucun nouvel envoi automatique n'est effectué.
+Les publications de commande/état ne sont pas mises en cache et les abonnements ne demandent aucun historique. Les doublons et messages de plus de quinze secondes sont ignorés. Les commandes ciblent la session de A découverte par la télécommande ; après rechargement de A, actualiser l'état sur B si la prochaine demande automatique n'a pas encore eu lieu. Maintenir les horloges des deux téléphones à l'heure automatique. Un délai de dix secondes sans confirmation affiche une erreur ; l'exécution d'une commande déjà en cours n'est pas annulée et la commande n'est pas renvoyée automatiquement.
 
 Le contrôle distant nécessite Internet sur les deux appareils et reste soumis aux quotas/disponibilité de ntfy.sh. Une erreur ntfy n'arrête pas le fonctionnement local. Les permissions du navigateur ne peuvent pas être accordées depuis B : si A demande une interaction ou une autorisation, intervenir sur A. Après un rechargement, repasser par la préparation audio/micro sur A. Passer A en Remote arrête sa lecture et sa surveillance locales et ferme son microphone.
 
@@ -94,6 +96,12 @@ python3 -m http.server 8000
 ```
 
 `localhost` est un contexte sécurisé : service worker et notifications fonctionnent en local.
+
+Tests du transport distant (Node.js 22+, sans dépendances ni publications réelles vers ntfy) :
+
+```sh
+node --test tests/remote.test.cjs
+```
 
 ## Limites connues
 

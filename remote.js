@@ -6,6 +6,9 @@
   const REQUEST_TIMEOUT_MS=10000;
   const REFRESH_MS=5*60*1000;
   const FRESH_MS=6*60*1000;
+  // ntfy sends a keepalive every 45 seconds, even when no state changes.
+  const STREAM_TIMEOUT_MS=90000;
+  const RECOVERY_MS=30000;
 
   // A live-only subscription and non-cached publications prevent command replay.
   window.MargododoRemote=class {
@@ -32,6 +35,31 @@
     start(mode){
       this.close();
       this.mode=mode;
+      this.resume=()=>{
+        if(document.visibilityState==='visible') this.connect();
+      };
+      document.addEventListener('visibilitychange',this.resume);
+      window.addEventListener('online',this.resume);
+      window.addEventListener('pageshow',this.resume);
+      this.connect();
+      this.refreshTimer=setInterval(()=>{
+        if(mode==='remote' && document.visibilityState==='visible' && this.connected && !this.pending){
+          this.request('state');
+        }
+      },REFRESH_MS);
+      this.uiTimer=setInterval(()=>{
+        if(this.source && Date.now()-this.streamSeen>STREAM_TIMEOUT_MS) this.connect();
+        this.options.onChange();
+      },1000);
+    }
+
+    connect(){
+      if(this.source) this.source.close();
+      clearTimeout(this.reconnectTimer);
+      clearTimeout(this.recoveryTimer);
+      this.connected=false;
+      this.interruptPending();
+      const mode=this.mode;
       const generation=this.generation;
       if(!('EventSource' in window)){
         this.error='Télécommande non supportée par ce navigateur.';
@@ -41,8 +69,15 @@
       const topic=mode==='local' ? COMMAND_TOPIC : STATE_TOPIC;
       const source=new EventSource('https://ntfy.sh/'+topic+'/sse');
       this.source=source;
+      this.streamSeen=Date.now();
+      const active=()=>generation===this.generation && source===this.source;
+      source.addEventListener('keepalive',()=>{
+        if(active()) this.streamSeen=Date.now();
+      });
       source.onopen=()=>{
-        if(generation!==this.generation) return;
+        if(!active()) return;
+        this.streamSeen=Date.now();
+        this.reconnectDelay=1000;
         this.connected=true;
         this.error='';
         this.lastSnapshot='';
@@ -51,18 +86,19 @@
         this.options.onChange();
       };
       source.onerror=()=>{
-        if(generation!==this.generation) return;
+        if(!active()) return;
         this.connected=false;
-        if(this.pending){
-          clearTimeout(this.pending.timer);
-          this.pending=null;
-          this.lastSeen=0;
-          this.error='Connexion interrompue. Commande non confirmée.';
-        }
+        this.interruptPending();
+        // Also recover from CLOSED streams (EventSource only retries CONNECTING).
+        source.close();
+        this.source=null;
+        this.reconnectDelay=Math.min((this.reconnectDelay || 1000)*2,RECOVERY_MS);
+        this.reconnectTimer=setTimeout(()=>this.connect(),this.reconnectDelay);
         this.options.onChange();
       };
       source.onmessage=(event)=>{
-        if(generation!==this.generation) return;
+        if(!active()) return;
+        this.streamSeen=Date.now();
         let message;
         try{
           const envelope=JSON.parse(event.data);
@@ -89,18 +125,32 @@
           this.receiveState(message);
         }
       };
-      this.refreshTimer=setInterval(()=>{
-        if(mode==='remote' && document.visibilityState==='visible' && this.connected && !this.pending){
-          this.request('state');
-        }
-      },REFRESH_MS);
-      this.uiTimer=setInterval(()=>this.options.onChange(),1000);
       this.options.onChange();
+    }
+
+    interruptPending(){
+      if(!this.pending) return;
+      clearTimeout(this.pending.timer);
+      this.pending=null;
+      this.lastSeen=0;
+      this.error='Connexion interrompue. Commande non confirmée.';
+    }
+
+    recoverState(){
+      clearTimeout(this.recoveryTimer);
+      this.recoveryTimer=setTimeout(()=>{
+        if(this.mode==='remote' && document.visibilityState==='visible' && !this.pending) this.connect();
+      },RECOVERY_MS);
     }
 
     close(){
       this.generation++;
+      document.removeEventListener('visibilitychange',this.resume);
+      window.removeEventListener('online',this.resume);
+      window.removeEventListener('pageshow',this.resume);
       if(this.source) this.source.close();
+      clearTimeout(this.reconnectTimer);
+      clearTimeout(this.recoveryTimer);
       clearInterval(this.refreshTimer);
       clearInterval(this.uiTimer);
       clearTimeout(this.publishTimer);
@@ -173,6 +223,7 @@
         this.pending=null;
         this.error='Téléphone chambre sans réponse. Commande non confirmée.';
         this.lastSeen=0;
+        this.recoverState();
         this.options.onChange();
       },REQUEST_TIMEOUT_MS)};
       this.pending=pending;
@@ -185,6 +236,7 @@
         clearTimeout(pending.timer);
         this.pending=null;
         this.error='Envoi ntfy impossible ('+e.message+'). Commande non confirmée.';
+        this.recoverState();
         this.options.onChange();
       });
     }
@@ -208,6 +260,7 @@
         return;
       }
       this.peer=message.sender;
+      clearTimeout(this.recoveryTimer);
       this.peerSequence=message.sequence;
       this.state=s;
       this.lastSeen=Date.now();
