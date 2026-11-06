@@ -50,9 +50,9 @@ Pour recevoir l'alerte sur un autre téléphone, installer l'application ntfy, s
 
 ### Télécommande : téléphone A dans la chambre, B dans le salon
 
-1. Sur **A**, conserver le mode **Local**, appuyer une fois sur **Lecture** pour autoriser l'audio, puis arrêter le son si nécessaire. Le contexte audio reste disponible après l'arrêt.
-2. Pour pouvoir aussi commander la détection depuis B, activer une première fois la **surveillance sur A** et autoriser le microphone. La surveillance peut ensuite être désactivée ; l'autorisation est retenue pour cette session.
-3. Laisser **A branché, écran allumé, application visible**. Après la préparation audio, l'application demande de maintenir l'écran allumé même quand le son est arrêté. Le navigateur ou le système peut refuser cette demande : vérifier l'écran.
+1. Sur **A**, conserver le mode **Local** : l'application prépare silencieusement l'audio et retrouve l'autorisation du microphone à l'ouverture et au retour au premier plan. Aucun son ni surveillance n'est lancé par cette préparation.
+2. À la première utilisation, ou si le navigateur bloque la préparation automatique, appuyer sur **Préparer ce téléphone pour la télécommande** et autoriser le microphone. Il n'est plus nécessaire de lancer puis arrêter la lecture et la surveillance. Si l'autorisation micro est déjà accordée mais que l'audio reste bloqué, un toucher sur A suffit généralement. Le navigateur peut imposer ce toucher après une réouverture ; la télécommande ne peut pas contourner cette règle.
+3. Laisser **A branché, écran allumé, application visible**. Après la préparation audio, l'application demande de maintenir l'écran allumé même quand le son est arrêté. Le navigateur ou le système peut refuser cette demande : vérifier l'écran. Pour débloquer l'audio, la préparation peut ouvrir brièvement le microphone déjà autorisé ; le flux est immédiatement fermé, sans analyse ni enregistrement.
 4. Sur **B**, ouvrir la même application et sélectionner **Remote**. Aucune association ni application ntfy supplémentaire n'est nécessaire. Le dernier mode choisi est mémorisé sur chaque téléphone.
 5. Attendre la réponse de A, puis utiliser les contrôles habituels : lecture/arrêt, durée (y compris ∞) et surveillance. Le volume, la sensibilité et la jauge micro restent uniquement sur A. En Remote, aucun son n'est joué et aucun accès au microphone n'est demandé sur B.
 
@@ -64,7 +64,7 @@ Les échanges utilisent les topics fixes **`margododo-commands`** et **`margodod
 
 Les publications de commande/état ne sont pas mises en cache et les abonnements ne demandent aucun historique. Les doublons et messages de plus de quinze secondes sont ignorés. Les commandes ciblent la session de A découverte par la télécommande ; après rechargement de A, actualiser l'état sur B si la prochaine demande automatique n'a pas encore eu lieu. Maintenir les horloges des deux téléphones à l'heure automatique. Un délai de dix secondes sans confirmation affiche une erreur ; l'exécution d'une commande déjà en cours n'est pas annulée et la commande n'est pas renvoyée automatiquement.
 
-Le contrôle distant nécessite Internet sur les deux appareils et reste soumis aux quotas/disponibilité de ntfy.sh. Une erreur ntfy n'arrête pas le fonctionnement local. Les permissions du navigateur ne peuvent pas être accordées depuis B : si A demande une interaction ou une autorisation, intervenir sur A. Après un rechargement, repasser par la préparation audio/micro sur A. Passer A en Remote arrête sa lecture et sa surveillance locales et ferme son microphone.
+Le contrôle distant nécessite Internet sur les deux appareils et reste soumis aux quotas/disponibilité de ntfy.sh. Une erreur ntfy n'arrête pas le fonctionnement local. Les permissions du navigateur ne peuvent pas être accordées depuis B : si A demande une interaction ou une autorisation, intervenir sur A. Après un rechargement, la préparation est retentée automatiquement avec les permissions déjà accordées. Sans prise en charge de l'API Permissions pour le micro, utiliser le bouton de préparation. Passer A en Remote arrête sa lecture et sa surveillance locales et ferme son microphone.
 
 ### Utilisation avec une enceinte Bluetooth
 
@@ -97,17 +97,17 @@ python3 -m http.server 8000
 
 `localhost` est un contexte sécurisé : service worker et notifications fonctionnent en local.
 
-Tests du transport distant (Node.js 22+, sans dépendances ni publications réelles vers ntfy) :
+Tests du transport distant et de la préparation silencieuse (Node.js 22+, sans dépendances ni publications réelles vers ntfy) :
 
 ```sh
-node --test tests/remote.test.cjs
+node --test tests/*.test.cjs
 ```
 
 ## Limites connues
 
 - Si l'app est **balaуée** des apps récentes, le navigateur stoppe l'audio (limite du web) et la notification reste affichée avec un temps figé ; son tap rouvre l'app.
 - La surveillance automatique exige que l'application reste visible avec l'écran allumé. Android peut suspendre l'accès au microphone si l'application passe en arrière-plan ou si l'écran est verrouillé.
-- L'autorisation du microphone et l'activation de la surveillance doivent être renouvelées après chaque rechargement de l'application.
+- La surveillance doit être réactivée après un rechargement, localement ou depuis la télécommande. L'autorisation du microphone est réutilisée si le navigateur l'a conservée ; sinon, elle doit être accordée à nouveau sur le téléphone Local.
 - L'alerte ntfy nécessite une connexion Internet. Son échec ne bloque pas le démarrage du bruit blanc et n'est pas retenté automatiquement.
 - Le volume réglé dans l'app est le **volume de départ** de la courbe ; le volume physique du téléphone reste le volume maître global.
 - Les notifications web et le badge d'icône requièrent une PWA installée (Android récent / iOS 16.4+).

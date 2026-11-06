@@ -168,6 +168,8 @@
     <p id="modeContext" class="mode-context">Contrôle de ce téléphone</p>
     <p id="connectionStatus" role="status">Connexion ntfy…</p>
     <button id="refreshRemoteBtn" type="button" hidden>Actualiser l’état</button>
+    <button id="prepareLocalBtn" type="button" hidden>Préparer ce téléphone pour la télécommande</button>
+    <p id="prepareStatus" role="status" hidden></p>
   </div>
 
   <div id="timeDisplay">30:00</div>
@@ -261,12 +263,16 @@
   const modeContext=document.getElementById('modeContext');
   const connectionStatus=document.getElementById('connectionStatus');
   const refreshRemoteBtn=document.getElementById('refreshRemoteBtn');
+  const prepareLocalBtn=document.getElementById('prepareLocalBtn');
+  const prepareStatus=document.getElementById('prepareStatus');
   const volumeControl=document.getElementById('volumeControl');
   const sensitivityControl=document.getElementById('sensitivityControl');
   const footerHint=document.getElementById('footerHint');
   let mode='local';
   let bridge=null;
   let microphoneAuthorized=false;
+  let preparingLocal=false;
+  let preparationMessage='';
   let monitoringStarting=false;
   let teardownTimer=null;
   let sliderEditing=false;
@@ -359,6 +365,58 @@
     return true;
   }
 
+  async function resumeLocalAudio(){
+    if(mode!=='local' || !ensureAudioContext()) return false;
+    const audio=ctx;
+    if(audio.state==='suspended'){
+      let timer;
+      try{
+        await Promise.race([audio.resume(),new Promise(function(resolve){ timer=setTimeout(resolve,2000); })]);
+      }catch(e){}finally{ clearTimeout(timer); }
+    }
+    if(mode!=='local' || ctx!==audio) return false;
+    if(audio.state==='running') requestWakeLock();
+    updateUI();
+    return audio.state==='running';
+  }
+
+  async function prepareLocal(interactive){
+    if(mode!=='local') return;
+    // Resume inside the gesture, before waiting for the permission query.
+    const audioReady=resumeLocalAudio();
+    if(preparingLocal) return;
+    preparingLocal=true;
+    preparationMessage='Préparation silencieuse…';
+    renderConnection();
+    let stream;
+    const audio=ctx;
+    try{
+      const permission=navigator.permissions
+        ? await navigator.permissions.query({name:'microphone'}).catch(function(){ return null; }) : null;
+      if(mode!=='local' || ctx!==audio) return;
+      if(permission) microphoneAuthorized=permission.state==='granted';
+      if((interactive || microphoneAuthorized) && !micStream && !monitoringStarting &&
+        (!microphoneAuthorized || !ctx || ctx.state!=='running')){
+        if(!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia) throw new Error('Microphone non supporté.');
+        stream=await navigator.mediaDevices.getUserMedia({audio:true});
+        if(mode!=='local' || ctx!==audio) return;
+        microphoneAuthorized=true;
+        await resumeLocalAudio();
+      }
+      await audioReady;
+      if(mode!=='local' || ctx!==audio) return;
+      preparationMessage=ctx && ctx.state==='running'
+        ? (microphoneAuthorized ? '' : 'Autorisez le micro avec le bouton de préparation, sans lancer l’écoute.')
+        : 'Touchez ce téléphone pour autoriser l’audio, sans lancer de son.';
+    }catch(e){
+      if(mode==='local' && ctx===audio) preparationMessage='Préparation incomplète : autorisez le microphone dans les réglages du site, puis réessayez.';
+    }finally{
+      if(stream) stream.getTracks().forEach(function(track){ track.stop(); });
+      preparingLocal=false;
+      updateUI();
+    }
+  }
+
   function buildGraph(){
     if(noiseSource) return;
     noiseBuffer=createNoiseBuffer(ctx);
@@ -444,7 +502,7 @@
     }
     if(ctx.state!=='running'){
       isStarting=false;
-      autoStatus='Appuyez sur Lecture sur le téléphone chambre pour autoriser l’audio.';
+      autoStatus='Touchez le téléphone chambre pour autoriser l’audio, sans lancer de son.';
       updateUI();
       return false;
     }
@@ -1056,6 +1114,7 @@
     }
     if(bridge) bridge.stateChanged();
     if(document.visibilityState==='visible'){
+      if(bridge) prepareLocal(false);
       if(isPlaying || autoEnabled || (ctx && ctx.state==='running')){ requestWakeLock(); }
       if(autoEnabled && ctx && ctx.state==='suspended'){
         ctx.resume().catch(function(){
@@ -1069,8 +1128,9 @@
   });
 
   document.addEventListener('pointerdown',function(){
-    if(mode==='local' && ctx && ctx.state==='suspended'){
-      ctx.resume().then(function(){
+    if(mode==='local' && (!ctx || ctx.state==='suspended')){
+      resumeLocalAudio().then(function(ready){
+        if(!ready) return;
         if(autoEnabled && !rearmTimeout){ autoStatus='Surveillance active'; startDetection(); }
         updateUI();
       }).catch(function(){});
@@ -1103,8 +1163,13 @@
     modeContext.textContent=remote ? 'Contrôle du téléphone chambre' : 'Contrôle de ce téléphone';
     footerHint.textContent=remote
       ? 'Aucun son ni microphone sur ce téléphone. Laissez le téléphone chambre allumé et visible.'
-      : 'Laissez cette page visible. Premier appui sur Lecture pour l’audio, sur Surveillance pour le micro.';
+      : 'Laissez cette page visible. Préparation silencieuse automatique avec les permissions déjà accordées.';
     refreshRemoteBtn.hidden=!remote;
+    const prepared=!!ctx && ctx.state==='running' && microphoneAuthorized;
+    prepareLocalBtn.hidden=remote || prepared;
+    prepareLocalBtn.disabled=preparingLocal;
+    prepareStatus.hidden=remote || prepared || !preparationMessage;
+    prepareStatus.textContent=preparationMessage;
     if(!bridge) return;
     refreshRemoteBtn.disabled=!!bridge.pending || !bridge.connected;
     if(bridge.error){ connectionStatus.textContent=bridge.error; return; }
@@ -1112,7 +1177,7 @@
     if(!remote){
       connectionStatus.textContent=ctx && ctx.state==='running'
         ? 'Réception des commandes active · audio autorisé'
-        : 'Réception des commandes active · appuyez sur Lecture pour autoriser l’audio';
+        : 'Réception des commandes active · touchez ce téléphone pour autoriser l’audio';
     }else if(bridge.pending){
       connectionStatus.textContent='En attente de confirmation du téléphone chambre…';
     }else if(!bridge.isFresh()){
@@ -1142,7 +1207,7 @@
     autoBtn.setAttribute('aria-pressed',String(view.autoEnabled));
     autoBtn.textContent=view.autoEnabled ? 'Désactiver la surveillance' : 'Activer la surveillance';
     autoHint.textContent=!known ? 'Ouvrez l’application en mode Local sur le téléphone chambre.'
-      : (!view.microphoneAuthorized ? 'Autorisez d’abord le micro en activant une fois la surveillance sur le téléphone chambre.'
+      : (!view.microphoneAuthorized ? 'Si nécessaire, utilisez Préparer ce téléphone sur le téléphone chambre pour autoriser le micro.'
         : (view.infinite ? 'Choisissez une durée finie pour la surveillance.'
           : (view.playing && view.autoEnabled ? 'Écoute suspendue pendant la lecture, puis reprise après 5 secondes.' : 'Commande de la surveillance du téléphone chambre.')));
     if(!sliderEditing){
@@ -1161,19 +1226,16 @@
     if(isStarting || monitoringStarting) throw new Error('Téléphone chambre occupé. Réessayez.');
     if(remote && (action==='play' || (action==='auto' && value))){
       if(document.visibilityState!=='visible') throw new Error('Ouvrez l’application sur le téléphone chambre et laissez l’écran allumé.');
-      if(!ctx || ctx.state!=='running') throw new Error('Appuyez sur Lecture sur le téléphone chambre pour autoriser l’audio.');
-      if(action==='auto' && !microphoneAuthorized) throw new Error('Activez une première fois la surveillance sur le téléphone chambre pour autoriser le micro.');
+      if(!await resumeLocalAudio()) throw new Error('Touchez le téléphone chambre pour autoriser l’audio (aucun son à lancer).');
+      if(mode!=='local') throw new Error('Ce téléphone est en mode Remote.');
       if(action==='auto' && navigator.permissions){
         const permission=await navigator.permissions.query({name:'microphone'}).catch(function(){ return null; });
-        if(permission && permission.state!=='granted'){
-          microphoneAuthorized=false;
-          updateUI();
-          throw new Error('Autorisez à nouveau le microphone sur le téléphone chambre.');
-        }
+        if(permission) microphoneAuthorized=permission.state==='granted';
       }
+      if(action==='auto' && !microphoneAuthorized) throw new Error('Utilisez Préparer ce téléphone sur le téléphone chambre pour autoriser le micro.');
     }
     if(action==='play'){
-      if(!await startAudio(remote ? 'remote' : 'manual')) throw new Error('Audio indisponible. Appuyez sur Lecture sur le téléphone chambre.');
+      if(!await startAudio(remote ? 'remote' : 'manual')) throw new Error('Audio indisponible. Touchez le téléphone chambre pour autoriser l’audio.');
     }else if(action==='stop'){
       if(isPlaying) stopAudio();
     }else if(action==='auto'){
@@ -1228,12 +1290,14 @@
     presetGroup.querySelectorAll('.pill').forEach(function(button){ button.disabled=false; });
     durationSlider.value=Math.round(durationMs/60000);
     if(bridge) bridge.start(mode);
+    if(mode==='local') prepareLocal(false);
     updatePresetActive();
     updateUI();
   }
 
   localModeBtn.addEventListener('click',function(){ setMode('local'); });
   remoteModeBtn.addEventListener('click',function(){ setMode('remote'); });
+  prepareLocalBtn.addEventListener('click',function(){ prepareLocal(true); });
   refreshRemoteBtn.addEventListener('click',function(){ bridge.request('state'); });
 
   registerSW();
@@ -1249,6 +1313,7 @@
   updateDurationLabel();
   updateRing();
   updateUI();
+  if(mode==='local') prepareLocal(false);
 })();
 </script>
 </body>
