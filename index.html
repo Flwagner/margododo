@@ -1128,7 +1128,11 @@
   });
 
   document.addEventListener('pointerdown',function(){
-    if(mode==='local' && (!ctx || ctx.state==='suspended')){
+    if(mode==='remote'){
+      if(bridge) bridge.maybeProbe();
+      return;
+    }
+    if(!ctx || ctx.state==='suspended'){
       resumeLocalAudio().then(function(ready){
         if(!ready) return;
         if(autoEnabled && !rearmTimeout){ autoStatus='Surveillance active'; startDetection(); }
@@ -1172,27 +1176,35 @@
     prepareStatus.textContent=preparationMessage;
     if(!bridge) return;
     refreshRemoteBtn.disabled=!!bridge.pending || !bridge.connected;
-    if(bridge.error){ connectionStatus.textContent=bridge.error; return; }
-    if(!bridge.connected){ connectionStatus.textContent='Connexion ntfy interrompue ou en cours…'; return; }
-    if(!remote){
-      connectionStatus.textContent=ctx && ctx.state==='running'
+    let connectionText;
+    if(bridge.error){
+      connectionText=bridge.error;
+    }else if(!bridge.connected){
+      connectionText='Connexion ntfy interrompue ou en cours…';
+    }else if(!remote){
+      connectionText=ctx && ctx.state==='running'
         ? 'Réception des commandes active · audio autorisé'
         : 'Réception des commandes active · touchez ce téléphone pour autoriser l’audio';
     }else if(bridge.pending){
-      connectionStatus.textContent='En attente de confirmation du téléphone chambre…';
+      connectionText='En attente de confirmation du téléphone chambre…';
     }else if(!bridge.isFresh()){
-      connectionStatus.textContent='Téléphone chambre sans réponse récente. Actualisez son état.';
+      connectionText='Téléphone chambre sans réponse récente. Actualisez son état.';
     }else{
       const seconds=Math.floor((Date.now()-bridge.lastSeen)/1000);
       const age=seconds<60 ? seconds+' s' : Math.floor(seconds/60)+' min';
-      connectionStatus.textContent='Dernière réponse du téléphone chambre il y a '+age+'.';
+      connectionText='Dernière réponse du téléphone chambre il y a '+age+'.';
     }
+    const budget=bridge.budgetInfo ? bridge.budgetInfo() : null;
+    if(budget && budget.count>=200){
+      connectionText='Quota ntfy '+budget.count+'/'+budget.limit+' · '+connectionText;
+    }
+    connectionStatus.textContent=connectionText;
   }
 
   function renderRemote(){
     const view=displayState();
     const known=!!bridge && !!bridge.state;
-    const disabled=!bridge || !bridge.isFresh() || !!bridge.pending || !!view.busy;
+    const disabled=!bridge || !bridge.connected || !known || !!bridge.pending || !!view.busy;
     localModeBtn.disabled=remoteModeBtn.disabled=false;
     playBtn.disabled=autoBtn.disabled=durationSlider.disabled=disabled;
     presetGroup.querySelectorAll('.pill').forEach(function(button){ button.disabled=disabled; });
@@ -1298,7 +1310,7 @@
   localModeBtn.addEventListener('click',function(){ setMode('local'); });
   remoteModeBtn.addEventListener('click',function(){ setMode('remote'); });
   prepareLocalBtn.addEventListener('click',function(){ prepareLocal(true); });
-  refreshRemoteBtn.addEventListener('click',function(){ bridge.request('state'); });
+  refreshRemoteBtn.addEventListener('click',function(){ bridge.maybeProbe(true); });
 
   registerSW();
   loadSettings();
