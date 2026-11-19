@@ -442,6 +442,9 @@
         typeof s.infinite!=='boolean' || !Number.isFinite(s.durationMs) ||
         s.durationMs<60000 || s.durationMs>7200000 || !Number.isFinite(s.endTime) ||
         !Number.isInteger(message.sequence)) return;
+      // Settings are optional so an older Local build keeps working.
+      if(s.volume!==undefined && (!Number.isInteger(s.volume) || s.volume<0 || s.volume>100)) return;
+      if(s.sensitivity!==undefined && (!Number.isInteger(s.sensitivity) || s.sensitivity<0 || s.sensitivity>100)) return;
       const reply=this.pending && message.replyTo===this.pending.id;
       // Accept a state from a sender announced after a reload, or shortly
       // after a probe. Other unknown senders stay ignored (single Local phone).

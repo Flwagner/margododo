@@ -320,3 +320,47 @@ test('freshness now lasts twenty minutes',async()=>{
   h.advance(2*60*1000);
   assert.equal(h.bridge.isFresh(),false);
 });
+
+test('remote receives volume and sensitivity with the local state',async()=>{
+  const h=harness();
+  h.sources[0].open();
+  await h.flush();
+  h.reply(undefined,'local',{state:Object.assign({},h.state,{volume:72,sensitivity:18})});
+  assert.equal(h.bridge.state.volume,72);
+  assert.equal(h.bridge.state.sensitivity,18);
+});
+
+test('an older local state without settings is still accepted',async()=>{
+  const h=harness();
+  h.sources[0].open();
+  await h.flush();
+  h.reply();
+  assert.equal(h.bridge.state.volume,undefined);
+  assert.equal(h.bridge.state.sensitivity,undefined);
+  assert.equal(h.bridge.isFresh(),true);
+});
+
+test('out-of-range or non-integer settings are rejected',async()=>{
+  for(const bad of [{volume:101},{volume:-1},{volume:50.5},{volume:'50'},
+    {sensitivity:101},{sensitivity:-1},{sensitivity:50.5},{sensitivity:null}]){
+    const h=harness();
+    h.sources[0].open();
+    await h.flush();
+    h.reply(undefined,'local',{state:Object.assign({},h.state,bad)});
+    assert.equal(h.bridge.state,null,JSON.stringify(bad));
+  }
+});
+
+test('volume and sensitivity commands carry an integer percentage',async()=>{
+  const h=harness();
+  h.sources[0].open();
+  await h.flush();
+  h.reply();
+  h.bridge.request('volume',72);
+  assert.equal(h.publications.at(-1).action,'volume');
+  assert.equal(h.publications.at(-1).value,72);
+  h.reply();
+  h.bridge.request('sensitivity',18);
+  assert.equal(h.publications.at(-1).action,'sensitivity');
+  assert.equal(h.publications.at(-1).value,18);
+});

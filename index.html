@@ -202,8 +202,11 @@
     </div>
 
     <div class="ctl-row" id="volumeControl">
-      <span class="ctl-label">Volume</span>
-      <input type="range" id="volumeSlider" min="0" max="100" value="60" aria-label="Volume">
+      <label class="ctl-label" for="volumeSlider">Volume</label>
+      <div class="slider-meta">
+        <input type="range" id="volumeSlider" min="0" max="100" value="60" aria-label="Volume">
+        <span class="value" id="volumeValue">60 %</span>
+      </div>
     </div>
 
     <div class="ctl-row">
@@ -227,7 +230,7 @@
         <div id="soundLevel" class="sound-level"></div>
         <div id="soundThreshold" class="sound-threshold" aria-hidden="true"></div>
       </div>
-      <p class="auto-hint">Barre : son actuel · trait : seuil. Déclenchement après 1,2 s de son admissible cumulée sur les 3 dernières secondes. Le filtre vocal reste actif.</p>
+      <p class="auto-hint" id="meterHint">Barre : son actuel · trait : seuil. Déclenchement après 1,2 s de son admissible cumulée sur les 3 dernières secondes. Le filtre vocal reste actif.</p>
     </div>
   </section>
 
@@ -249,6 +252,7 @@
   const durationSlider=document.getElementById('durationSlider');
   const durationValue=document.getElementById('durationValue');
   const volumeSlider=document.getElementById('volumeSlider');
+  const volumeValue=document.getElementById('volumeValue');
   const autoBtn=document.getElementById('autoBtn');
   const autoHint=document.getElementById('autoHint');
   const sensitivitySlider=document.getElementById('sensitivitySlider');
@@ -258,6 +262,7 @@
   const soundMeter=document.getElementById('soundMeter');
   const soundLevel=document.getElementById('soundLevel');
   const soundThreshold=document.getElementById('soundThreshold');
+  const meterHint=document.getElementById('meterHint');
   const localModeBtn=document.getElementById('localModeBtn');
   const remoteModeBtn=document.getElementById('remoteModeBtn');
   const modeContext=document.getElementById('modeContext');
@@ -265,8 +270,6 @@
   const refreshRemoteBtn=document.getElementById('refreshRemoteBtn');
   const prepareLocalBtn=document.getElementById('prepareLocalBtn');
   const prepareStatus=document.getElementById('prepareStatus');
-  const volumeControl=document.getElementById('volumeControl');
-  const sensitivityControl=document.getElementById('sensitivityControl');
   const footerHint=document.getElementById('footerHint');
   let mode='local';
   let bridge=null;
@@ -276,6 +279,9 @@
   let monitoringStarting=false;
   let teardownTimer=null;
   let sliderEditing=false;
+  let volumeEditing=false;
+  let sensitivityEditing=false;
+  let settingsPublishTimer=null;
 
   let ctx=null;
   let noiseSource=null;
@@ -852,6 +858,16 @@
     }catch(e){}
   }
 
+  // Publish a settled setting without one ntfy message per slider pixel.
+  function publishSettingsChange(){
+    if(mode!=='local' || !bridge) return;
+    clearTimeout(settingsPublishTimer);
+    settingsPublishTimer=setTimeout(function(){
+      settingsPublishTimer=null;
+      if(mode==='local' && bridge) bridge.stateChanged(true);
+    },600);
+  }
+
   function loadSettings(){
     try{
       const d=parseInt(localStorage.getItem('margododo.durationMin'),10);
@@ -914,6 +930,8 @@
     autoBtn.disabled=monitoringStarting;
     localModeBtn.disabled=remoteModeBtn.disabled=isStarting || monitoringStarting;
     sensitivityValue.textContent=sensitivity+' %';
+    volumeValue.textContent=Math.round(volume*100)+' %';
+    volumeSlider.disabled=sensitivitySlider.disabled=false;
     updateSoundMeter();
     autoHint.textContent=autoEnabled && isPlaying
       ? 'Surveillance suspendue pendant la lecture.'
@@ -1091,9 +1109,22 @@
   });
 
   volumeSlider.addEventListener('input',function(){
-    volume=volumeSlider.value/100;
+    const percent=parseInt(volumeSlider.value,10);
+    if(mode==='remote'){
+      volumeEditing=true;
+      volumeValue.textContent=percent+' %';
+      return;
+    }
+    volume=percent/100;
+    volumeValue.textContent=percent+' %';
     if(masterVolume && ctx){ masterVolume.gain.setValueAtTime(volume,ctx.currentTime); }
     saveSettings();
+    publishSettingsChange();
+  });
+  volumeSlider.addEventListener('change',function(){
+    if(mode!=='remote') return;
+    volumeEditing=false;
+    dispatchCommand('volume',parseInt(volumeSlider.value,10));
   });
 
   autoBtn.addEventListener('click',function(){
@@ -1101,11 +1132,26 @@
   });
 
   sensitivitySlider.addEventListener('input',function(){
-    sensitivity=parseInt(sensitivitySlider.value,10);
+    const percent=parseInt(sensitivitySlider.value,10);
+    if(mode==='remote'){
+      sensitivityEditing=true;
+      const threshold=Math.round(-20-percent*.4);
+      sensitivityValue.textContent=percent+' %';
+      thresholdValue.textContent='Seuil : '+threshold+' dBFS';
+      sensitivitySlider.setAttribute('aria-valuetext',percent+' %, seuil '+threshold+' dBFS');
+      return;
+    }
+    sensitivity=percent;
     resetDetectionWindow();
     sensitivityValue.textContent=sensitivity+' %';
     updateSoundMeter();
     saveSettings();
+    publishSettingsChange();
+  });
+  sensitivitySlider.addEventListener('change',function(){
+    if(mode!=='remote') return;
+    sensitivityEditing=false;
+    dispatchCommand('sensitivity',parseInt(sensitivitySlider.value,10));
   });
 
   document.addEventListener('visibilitychange',function(){
@@ -1145,6 +1191,7 @@
     return {
       playing:isPlaying,autoEnabled:autoEnabled,infinite:infiniteMode,
       durationMs:durationMs,endTime:endTime,
+      volume:Math.round(volume*100),sensitivity:sensitivity,
       audioReady:!!ctx && ctx.state==='running',microphoneAuthorized:microphoneAuthorized,
       visible:document.visibilityState==='visible',busy:isStarting || monitoringStarting
     };
@@ -1163,7 +1210,15 @@
     remoteModeBtn.classList.toggle('active',remote);
     localModeBtn.setAttribute('aria-pressed',String(!remote));
     remoteModeBtn.setAttribute('aria-pressed',String(remote));
-    volumeControl.hidden=sensitivityControl.hidden=remote;
+    soundMeter.hidden=remote;
+    micLevelValue.hidden=remote;
+    meterHint.textContent=remote
+      ? 'Le niveau du micro est mesuré uniquement sur le téléphone chambre. Le trait indique le seuil appliqué là-bas.'
+      : 'Barre : son actuel · trait : seuil. Déclenchement après 1,2 s de son admissible cumulée sur les 3 dernières secondes. Le filtre vocal reste actif.';
+    if(remote && bridge && bridge.state &&
+      (!Number.isInteger(bridge.state.volume) || !Number.isInteger(bridge.state.sensitivity))){
+      meterHint.textContent='Mettez à jour l’application sur le téléphone chambre pour régler le volume et la sensibilité à distance.';
+    }
     modeContext.textContent=remote ? 'Contrôle du téléphone chambre' : 'Contrôle de ce téléphone';
     footerHint.textContent=remote
       ? 'Aucun son ni microphone sur ce téléphone. Laissez le téléphone chambre allumé et visible.'
@@ -1204,9 +1259,14 @@
   function renderRemote(){
     const view=displayState();
     const known=!!bridge && !!bridge.state;
+    const settingsKnown=known && Number.isInteger(view.volume) && Number.isInteger(view.sensitivity);
     const disabled=!bridge || !bridge.connected || !known || !!bridge.pending || !!view.busy;
+    const settingsDisabled=disabled || !settingsKnown;
+    const volumePending=!!bridge && !!bridge.pending && bridge.pending.action==='volume';
+    const sensitivityPending=!!bridge && !!bridge.pending && bridge.pending.action==='sensitivity';
     localModeBtn.disabled=remoteModeBtn.disabled=false;
     playBtn.disabled=autoBtn.disabled=durationSlider.disabled=disabled;
+    volumeSlider.disabled=sensitivitySlider.disabled=settingsDisabled;
     presetGroup.querySelectorAll('.pill').forEach(function(button){ button.disabled=disabled; });
     statusEl.classList.toggle('monitoring',known && view.autoEnabled && !view.playing);
     statusEl.classList.toggle('playing',known && view.playing);
@@ -1225,6 +1285,34 @@
     if(!sliderEditing){
       durationSlider.value=Math.round(view.durationMs/60000);
       durationValue.textContent=view.infinite ? '∞' : Math.round(view.durationMs/60000)+' min';
+    }
+    if(!volumeEditing){
+      if(volumePending){
+        volumeValue.textContent=(parseInt(volumeSlider.value,10)||0)+' % · à confirmer';
+      }else if(settingsKnown){
+        volumeSlider.value=String(view.volume);
+        volumeValue.textContent=view.volume+' %';
+      }else{
+        volumeValue.textContent='—';
+      }
+    }
+    if(!sensitivityEditing){
+      if(sensitivityPending){
+        const percent=parseInt(sensitivitySlider.value,10)||0;
+        const threshold=Math.round(-20-percent*.4);
+        sensitivityValue.textContent=percent+' % · à confirmer';
+        thresholdValue.textContent='Seuil : '+threshold+' dBFS';
+      }else if(settingsKnown){
+        const threshold=Math.round(-20-view.sensitivity*.4);
+        sensitivitySlider.value=String(view.sensitivity);
+        sensitivityValue.textContent=view.sensitivity+' %';
+        sensitivitySlider.setAttribute('aria-valuetext',view.sensitivity+' %, seuil '+threshold+' dBFS');
+        thresholdValue.textContent='Seuil : '+threshold+' dBFS';
+      }else{
+        sensitivityValue.textContent='—';
+        sensitivitySlider.setAttribute('aria-valuetext','Sensibilité inconnue');
+        thresholdValue.textContent='Seuil : —';
+      }
     }
     updatePresetActive();
     if(!known) timeDisplay.textContent='—';
@@ -1269,6 +1357,21 @@
       saveSettings();
       updatePresetActive();
       updateDurationLabel();
+    }else if(action==='volume'){
+      if(!Number.isInteger(value) || value<0 || value>100) throw new Error('Volume invalide (0 à 100).');
+      volume=value/100;
+      volumeSlider.value=String(value);
+      volumeValue.textContent=value+' %';
+      if(masterVolume && ctx){ masterVolume.gain.setValueAtTime(volume,ctx.currentTime); }
+      saveSettings();
+    }else if(action==='sensitivity'){
+      if(!Number.isInteger(value) || value<0 || value>100) throw new Error('Sensibilité invalide (0 à 100).');
+      sensitivity=value;
+      sensitivitySlider.value=String(value);
+      sensitivityValue.textContent=value+' %';
+      resetDetectionWindow();
+      updateSoundMeter();
+      saveSettings();
     }else throw new Error('Commande inconnue.');
     updateUI();
   }
@@ -1297,6 +1400,8 @@
       releaseWakeLock();
     }else mode=next;
     sliderEditing=false;
+    volumeEditing=false;
+    sensitivityEditing=false;
     try{ localStorage.setItem('margododo.mode',mode); }catch(e){}
     durationSlider.disabled=false;
     presetGroup.querySelectorAll('.pill').forEach(function(button){ button.disabled=false; });
