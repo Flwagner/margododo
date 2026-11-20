@@ -147,6 +147,13 @@
   .connection{ width:100%; text-align:center; color:var(--muted); font-size:.8rem; line-height:1.5; }
   .connection button{ color:var(--accent); background:none; border:0; text-decoration:underline; cursor:pointer; padding:8px; font:inherit; }
   .mode-context{ font-weight:600; color:var(--text); }
+  #nightScreen{
+    position:fixed; inset:0; z-index:1000;
+    width:100%; height:100%; border:0; border-radius:0;
+    background:#000; cursor:pointer; touch-action:none;
+  }
+  #nightScreen:focus{ outline:none; }
+  html.night-mode,html.night-mode body{ background:#000; overflow:hidden; }
 </style>
 </head>
 <body>
@@ -234,8 +241,9 @@
     </div>
   </section>
 
-  <p class="foot" id="footerHint">Écran maintenu allumé pendant la lecture et la surveillance</p>
+  <p class="foot" id="footerHint">Mode nuit après 30 s sans interaction · toucher pour réafficher</p>
 </main>
+<button id="nightScreen" type="button" aria-label="Mode nuit : toucher pour réafficher les contrôles" hidden></button>
 
 <script src="remote.js"></script>
 <script>
@@ -1222,7 +1230,7 @@
     modeContext.textContent=remote ? 'Contrôle du téléphone chambre' : 'Contrôle de ce téléphone';
     footerHint.textContent=remote
       ? 'Aucun son ni microphone sur ce téléphone. Laissez le téléphone chambre allumé et visible.'
-      : 'Laissez cette page visible. Préparation silencieuse automatique avec les permissions déjà accordées.';
+      : 'Laissez cette page visible. Écran noir après 30 s sans interaction ; touchez pour réafficher les contrôles.';
     refreshRemoteBtn.hidden=!remote;
     const prepared=!!ctx && ctx.state==='running' && microphoneAuthorized;
     prepareLocalBtn.hidden=remote || prepared;
@@ -1399,6 +1407,7 @@
       teardown();
       releaseWakeLock();
     }else mode=next;
+    resetNightMode();
     sliderEditing=false;
     volumeEditing=false;
     sensitivityEditing=false;
@@ -1417,9 +1426,64 @@
   prepareLocalBtn.addEventListener('click',function(){ prepareLocal(true); });
   refreshRemoteBtn.addEventListener('click',function(){ bridge.maybeProbe(true); });
 
+  function initNightMode(){
+    const screen=document.getElementById('nightScreen');
+    const main=document.querySelector('main');
+    const theme=document.querySelector('meta[name="theme-color"]');
+    const originalTheme=theme.content;
+    let timer=null;
+    let previousFocus=null;
+
+    function reset(){
+      clearTimeout(timer);
+      timer=null;
+      if(mode!=='local'){
+        reveal();
+        return;
+      }
+      if(!screen.hidden || document.visibilityState!=='visible') return;
+      timer=setTimeout(function(){
+        timer=null;
+        if(mode!=='local' || document.visibilityState!=='visible') return;
+        previousFocus=document.activeElement;
+        main.inert=true;
+        updateBanner.inert=true;
+        screen.hidden=false;
+        document.documentElement.classList.add('night-mode');
+        theme.content='#000000';
+        screen.focus({preventScroll:true});
+      },30000);
+    }
+
+    function reveal(){
+      if(screen.hidden) return;
+      screen.hidden=true;
+      main.inert=false;
+      updateBanner.inert=false;
+      document.documentElement.classList.remove('night-mode');
+      theme.content=originalTheme;
+      if(previousFocus && previousFocus.isConnected) previousFocus.focus({preventScroll:true});
+    }
+
+    // Keep the overlay through pointerup: the waking tap never reaches a control.
+    screen.addEventListener('click',function(event){
+      event.preventDefault();
+      event.stopPropagation();
+      reveal();
+      reset();
+    });
+    ['pointerdown','pointermove','keydown','input','scroll'].forEach(function(type){
+      document.addEventListener(type,reset,{capture:true,passive:true});
+    });
+    document.addEventListener('visibilitychange',reset);
+    reset();
+    return reset;
+  }
+
   registerSW();
   loadSettings();
   try{ if(localStorage.getItem('margododo.mode')==='remote') mode='remote'; }catch(e){}
+  const resetNightMode=initNightMode();
   bridge=new MargododoRemote({
     getState:localState,
     onCommand:function(action,value){ return executeLocalCommand(action,value,true); },
